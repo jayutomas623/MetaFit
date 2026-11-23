@@ -7,6 +7,7 @@ import {
   Dimensions,
   ActivityIndicator,
   Platform,
+  AppState,
 } from 'react-native';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
 import { useCameraPermissions } from 'expo-camera';
@@ -15,6 +16,12 @@ import { useNavigation } from '@react-navigation/native';
 import Svg, { Circle } from 'react-native-svg';
 import { ColoresApp } from '../theme/colors';
 import * as Speech from 'expo-speech';
+import {
+  crearHtmlMediaPipe,
+  SCRIPT_CAMBIAR_CAMARA,
+  SCRIPT_DETENER_CAMARA,
+  SCRIPT_REANUDAR_CAMARA,
+} from '../services/mediapipeWebView';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -25,158 +32,8 @@ const GAUGE_RADIUS = 21;
 const GAUGE_CENTER = GAUGE_SIZE / 2;
 const GAUGE_CIRCUMFERENCE = 2 * Math.PI * GAUGE_RADIUS;
 
-// HTML optimizado con Google MediaPipe Pose en tiempo real a 30 FPS
-const MEDIAPIPE_HTML = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
-    #video {
-      position: absolute;
-      top: 0; left: 0;
-      width: 100%; height: 100%;
-      object-fit: cover;
-      transform: scaleX(-1);
-    }
-    #canvas {
-      position: absolute;
-      top: 0; left: 0;
-      width: 100%; height: 100%;
-      object-fit: cover;
-      transform: scaleX(-1);
-      pointer-events: none;
-    }
-  </style>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
-</head>
-<body>
-  <video id="video" playsinline autoplay muted webkit-playsinline></video>
-  <canvas id="canvas"></canvas>
-
-  <script>
-    const video = document.getElementById('video');
-    const canvas = document.getElementById('canvas');
-    const ctx = canvas.getContext('2d');
-    let currentFacing = 'user';
-    let poseInstance = null;
-    let cameraStream = null;
-    let isProcessing = false;
-
-    function sendToApp(msg) {
-      if (window.ReactNativeWebView) {
-        window.ReactNativeWebView.postMessage(JSON.stringify(msg));
-      }
-    }
-
-    if (!navigator.mediaDevices) navigator.mediaDevices = {};
-    if (!navigator.mediaDevices.getUserMedia) {
-      const legacy = navigator.webkitGetUserMedia || navigator.mozGetUserMedia || navigator.msGetUserMedia || navigator.getUserMedia;
-      if (legacy) {
-        navigator.mediaDevices.getUserMedia = function(c) {
-          return new Promise((resolve, reject) => legacy.call(navigator, c, resolve, reject));
-        };
-      }
-    }
-
-    async function initMediaPipe() {
-      try {
-        poseInstance = new Pose({
-          locateFile: (file) => 'https://cdn.jsdelivr.net/npm/@mediapipe/pose/' + file
-        });
-
-        poseInstance.setOptions({
-          modelComplexity: 0,
-          smoothLandmarks: true,
-          minDetectionConfidence: 0.5,
-          minTrackingConfidence: 0.5
-        });
-
-        poseInstance.onResults(onPoseResults);
-        await startCamera('user');
-      } catch (err) {
-        sendToApp({ type: 'ERROR', message: err.message });
-      }
-    }
-
-    function onPoseResults(results) {
-      canvas.width = video.videoWidth || window.innerWidth;
-      canvas.height = video.videoHeight || window.innerHeight;
-
-      ctx.save();
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      if (results.poseLandmarks && results.poseLandmarks.length > 0) {
-        drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS, { color: '#FF2D55', lineWidth: 1.5 });
-        drawLandmarks(ctx, results.poseLandmarks, { color: '#FFFFFF', fillColor: '#FF2D55', lineWidth: 1, radius: 2.5 });
-
-        sendToApp({
-          type: 'LANDMARKS',
-          landmarks: results.poseLandmarks
-        });
-      } else {
-        sendToApp({ type: 'NO_HUMAN' });
-      }
-      ctx.restore();
-    }
-
-    async function startCamera(facingMode) {
-      try {
-        currentFacing = facingMode;
-        const isFront = facingMode === 'user';
-        video.style.transform = isFront ? 'scaleX(-1)' : 'scaleX(1)';
-        canvas.style.transform = isFront ? 'scaleX(-1)' : 'scaleX(1)';
-
-        if (cameraStream) {
-          cameraStream.getTracks().forEach(t => t.stop());
-        }
-
-        cameraStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: currentFacing, width: { ideal: 640 }, height: { ideal: 480 } },
-          audio: false
-        });
-
-        video.srcObject = cameraStream;
-        await video.play();
-
-        sendToApp({ type: 'CAMERA_READY' });
-
-        async function frameLoop() {
-          if (video.readyState >= 2 && !isProcessing && poseInstance) {
-            isProcessing = true;
-            try {
-              await poseInstance.send({ image: video });
-            } catch (e) {}
-            isProcessing = false;
-          }
-          requestAnimationFrame(frameLoop);
-        }
-        requestAnimationFrame(frameLoop);
-      } catch (err) {
-        sendToApp({ type: 'CAMERA_ERROR', error: err.message });
-      }
-    }
-
-    window.toggleCameraFacing = function() {
-      const nextFacing = currentFacing === 'user' ? 'environment' : 'user';
-      startCamera(nextFacing);
-      return nextFacing;
-    };
-
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', initMediaPipe);
-    } else {
-      initMediaPipe();
-    }
-  </script>
-</body>
-</html>
-`;
+// HTML compartido de cámara + MediaPipe (ver src/services/mediapipeWebView.ts)
+const MEDIAPIPE_HTML = crearHtmlMediaPipe({ grosorLinea: 1.5, radioPunto: 2.5 });
 
 export const PantallaCamaraBiometrica = ({ route }: any) => {
   const navigation = useNavigation();
@@ -259,6 +116,40 @@ export const PantallaCamaraBiometrica = ({ route }: any) => {
     };
   }, []);
 
+  // Ciclo de vida de la cámara:
+  // - Antes de salir (beforeRemove) se libera la cámara dentro del WebView, para que
+  //   la siguiente entrada no encuentre el dispositivo ocupado (causa del "zoom" y de
+  //   la pérdida de detección al entrar y salir varias veces).
+  // - En segundo plano se detiene y al volver se reanuda.
+  const [webViewKey, setWebViewKey] = useState(0);
+  const reintentosCamaraRef = useRef(0);
+
+  useEffect(() => {
+    const quitarBeforeRemove = navigation.addListener('beforeRemove', () => {
+      webViewRef.current?.injectJavaScript(SCRIPT_DETENER_CAMARA);
+    });
+    const suscripcionAppState = AppState.addEventListener('change', (estado) => {
+      if (estado === 'active') {
+        webViewRef.current?.injectJavaScript(SCRIPT_REANUDAR_CAMARA);
+      } else {
+        webViewRef.current?.injectJavaScript(SCRIPT_DETENER_CAMARA);
+      }
+    });
+    return () => {
+      quitarBeforeRemove();
+      suscripcionAppState.remove();
+      webViewRef.current?.injectJavaScript(SCRIPT_DETENER_CAMARA);
+    };
+  }, [navigation]);
+
+  // Si el proceso del WebView muere o la cámara falla, se remonta el WebView limpio.
+  const remontarWebView = () => {
+    if (reintentosCamaraRef.current >= 3) return;
+    reintentosCamaraRef.current += 1;
+    setCargandoIA(true);
+    setWebViewKey((k) => k + 1);
+  };
+
   // Guardado infalible de la medición
   const guardarYVolver = () => {
     if (yaGuardadoRef.current) return;
@@ -329,6 +220,11 @@ export const PantallaCamaraBiometrica = ({ route }: any) => {
 
       if (data.type === 'CAMERA_READY') {
         setCargandoIA(false);
+      }
+
+      if (data.type === 'CAMERA_ERROR') {
+        setTimeout(remontarWebView, 800);
+        return;
       }
 
       if (data.type === 'NO_HUMAN') {
@@ -596,7 +492,7 @@ export const PantallaCamaraBiometrica = ({ route }: any) => {
 
   const toggleFacing = () => {
     if (webViewRef.current) {
-      webViewRef.current.injectJavaScript('window.toggleCameraFacing(); true;');
+      webViewRef.current.injectJavaScript(SCRIPT_CAMBIAR_CAMARA);
     }
   };
 
@@ -631,7 +527,10 @@ export const PantallaCamaraBiometrica = ({ route }: any) => {
     <View style={styles.container}>
       {/* WebView con cámara a 30 FPS */}
       <WebView
+        key={webViewKey}
         ref={webViewRef}
+        onRenderProcessGone={remontarWebView}
+        onContentProcessDidTerminate={remontarWebView}
         originWhitelist={['*']}
         source={{ html: MEDIAPIPE_HTML, baseUrl: 'https://localhost' }}
         style={StyleSheet.absoluteFill}

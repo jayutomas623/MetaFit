@@ -8,3 +8,5 @@ tzdata>=2025.1
 opencv-python
 mediapipe
 Pillow
+torch
+torchvision

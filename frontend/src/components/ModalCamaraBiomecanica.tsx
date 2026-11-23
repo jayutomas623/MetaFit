@@ -7,6 +7,8 @@ import {
   TouchableOpacity,
   Platform,
   ActivityIndicator,
+  AppState,
+  ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -15,8 +17,17 @@ import { useCameraPermissions } from 'expo-camera';
 import Svg, { Circle } from 'react-native-svg';
 import * as Speech from 'expo-speech';
 import { Ejercicio } from '../models/Ejercicio';
-import { ExerciseEngine, AnalysisResult } from '../services/exerciseEngine';
+import { ExerciseEngine, AnalysisResult, SessionSummary } from '../services/exerciseEngine';
 import { ColoresApp } from '../theme/colors';
+import {
+  crearHtmlMediaPipe,
+  SCRIPT_CAMBIAR_CAMARA,
+  SCRIPT_DETENER_CAMARA,
+  SCRIPT_REANUDAR_CAMARA,
+} from '../services/mediapipeWebView';
+
+/** Intervalo mínimo entre actualizaciones del ángulo en pantalla (evita re-render a 30 FPS). */
+const UI_ANGLE_THROTTLE_MS = 100;
 
 // Geometría para micro-gráfica circular (estilo Análisis Biométrico)
 const GAUGE_SIZE = 46;
@@ -32,172 +43,8 @@ interface Props {
   onCompletarSerie?: (reps: number) => void;
 }
 
-// HTML optimizado con Google MediaPipe Pose en tiempo real
-const MEDIAPIPE_HTML = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
-    #video {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      transform: scaleX(-1);
-    }
-    #canvas {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      transform: scaleX(-1);
-      pointer-events: none;
-    }
-  </style>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
-</head>
-<body>
-  <video id="video" playsinline autoplay muted webkit-playsinline></video>
-  <canvas id="canvas"></canvas>
-
-  <script>
-    const video = document.getElementById('video');
-    const canvas = document.getElementById('canvas');
-    const ctx = canvas.getContext('2d');
-    let currentFacing = 'user';
-    let poseInstance = null;
-    let cameraStream = null;
-    let isProcessing = false;
-
-    function sendToApp(msg) {
-      if (window.ReactNativeWebView) {
-        window.ReactNativeWebView.postMessage(JSON.stringify(msg));
-      }
-    }
-
-    if (!navigator.mediaDevices) {
-      navigator.mediaDevices = {};
-    }
-    if (!navigator.mediaDevices.getUserMedia) {
-      const legacyGetUserMedia = navigator.webkitGetUserMedia || navigator.mozGetUserMedia || navigator.msGetUserMedia || navigator.getUserMedia;
-      if (legacyGetUserMedia) {
-        navigator.mediaDevices.getUserMedia = function(constraints) {
-          return new Promise(function(resolve, reject) {
-            legacyGetUserMedia.call(navigator, constraints, resolve, reject);
-          });
-        };
-      }
-    }
-
-    async function initMediaPipe() {
-      try {
-        poseInstance = new Pose({
-          locateFile: (file) => 'https://cdn.jsdelivr.net/npm/@mediapipe/pose/' + file
-        });
-
-        poseInstance.setOptions({
-          modelComplexity: 0,
-          smoothLandmarks: true,
-          minDetectionConfidence: 0.5,
-          minTrackingConfidence: 0.5
-        });
-
-        poseInstance.onResults(onPoseResults);
-        await startCamera('user');
-      } catch (err) {
-        sendToApp({ type: 'CAMERA_ERROR', error: err.message });
-      }
-    }
-
-    function onPoseResults(results) {
-      canvas.width = video.videoWidth || window.innerWidth;
-      canvas.height = video.videoHeight || window.innerHeight;
-
-      ctx.save();
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      if (results.poseLandmarks && results.poseLandmarks.length > 0) {
-        // Esqueleto limpio en rojo Meta Fit (#FF2D55) y blanco
-        drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS, { color: '#FF2D55', lineWidth: 2 });
-        drawLandmarks(ctx, results.poseLandmarks, { color: '#FFFFFF', fillColor: '#FF2D55', lineWidth: 1.5, radius: 3 });
-
-        sendToApp({
-          type: 'LANDMARKS',
-          landmarks: results.poseLandmarks
-        });
-      } else {
-        sendToApp({ type: 'NO_HUMAN' });
-      }
-      ctx.restore();
-    }
-
-    async function startCamera(facingMode) {
-      try {
-        currentFacing = facingMode;
-        const isFront = facingMode === 'user';
-        video.style.transform = isFront ? 'scaleX(-1)' : 'scaleX(1)';
-        canvas.style.transform = isFront ? 'scaleX(-1)' : 'scaleX(1)';
-
-        if (cameraStream) {
-          cameraStream.getTracks().forEach(t => t.stop());
-        }
-
-        cameraStream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: currentFacing,
-            width: { ideal: 640 },
-            height: { ideal: 480 }
-          },
-          audio: false
-        });
-
-        video.srcObject = cameraStream;
-        await video.play();
-
-        sendToApp({ type: 'CAMERA_READY' });
-
-        async function frameLoop() {
-          if (video.readyState >= 2 && !isProcessing && poseInstance) {
-            isProcessing = true;
-            try {
-              await poseInstance.send({ image: video });
-            } catch (e) {}
-            isProcessing = false;
-          }
-          requestAnimationFrame(frameLoop);
-        }
-        requestAnimationFrame(frameLoop);
-
-      } catch (err) {
-        sendToApp({ type: 'CAMERA_ERROR', error: err.message });
-      }
-    }
-
-    window.toggleCameraFacing = function() {
-      const nextFacing = currentFacing === 'user' ? 'environment' : 'user';
-      startCamera(nextFacing);
-      return nextFacing;
-    };
-
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', initMediaPipe);
-    } else {
-      initMediaPipe();
-    }
-  </script>
-</body>
-</html>
-`;
+// HTML compartido de cámara + MediaPipe (ver src/services/mediapipeWebView.ts)
+const MEDIAPIPE_HTML = crearHtmlMediaPipe({ grosorLinea: 2, radioPunto: 3 });
 
 export const ModalCamaraBiomecanica: React.FC<Props> = ({
   visible,
@@ -214,9 +61,14 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
   const [humanoDetectado, setHumanoDetectado] = useState(false);
   const [cargando, setCargando] = useState(true);
   const [errorCamara, setErrorCamara] = useState<string | null>(null);
+  const [repsNoContadas, setRepsNoContadas] = useState(0);
+  const [consejo, setConsejo] = useState<string | null>(null);
+  const [resumen, setResumen] = useState<SessionSummary | null>(null);
+  const [webViewKey, setWebViewKey] = useState(0);
 
   const engineRef = useRef<ExerciseEngine | null>(null);
   const webViewRef = useRef<any>(null);
+  const ultimoAnguloUiRef = useRef<number>(0);
 
   // Control de audio mediante expo-speech (estilo Análisis Biométrico)
   const ultimoAudioRef = useRef<number>(0);
@@ -261,9 +113,13 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
       setHumanoDetectado(false);
       setCargando(true);
       setErrorCamara(null);
+      setRepsNoContadas(0);
+      setConsejo(null);
+      setResumen(null);
       ultimoAudioRef.current = 0;
       ultimaRepHabladaRef.current = 0;
       ultimoErrorHabladoRef.current = '';
+      ultimoAnguloUiRef.current = 0;
     } else {
       try {
         Speech.stop();
@@ -271,7 +127,24 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
     }
   }, [visible, ejercicio]);
 
+  // Detener / reanudar la cámara cuando la app pasa a segundo plano.
+  useEffect(() => {
+    if (!visible) return;
+    const sub = AppState.addEventListener('change', (estado) => {
+      webViewRef.current?.injectJavaScript(
+        estado === 'active' ? SCRIPT_REANUDAR_CAMARA : SCRIPT_DETENER_CAMARA
+      );
+    });
+    return () => sub.remove();
+  }, [visible]);
+
   if (!visible || !ejercicio) return null;
+
+  // Libera la cámara dentro del WebView antes de desmontarlo, para que la siguiente
+  // apertura no encuentre el dispositivo ocupado.
+  const detenerCamara = () => {
+    webViewRef.current?.injectJavaScript(SCRIPT_DETENER_CAMARA);
+  };
 
   // Recepción de datos REALES desde Google MediaPipe
   const handleWebViewMessage = (event: WebViewMessageEvent) => {
@@ -283,26 +156,28 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
         setErrorCamara(null);
         setHumanoDetectado(true);
 
-        if (engineRef.current) {
+        if (engineRef.current && !resumen) {
           const result: AnalysisResult = engineRef.current.processLandmarks(data.landmarks);
 
           if (result.trackingValid) {
             setReps(result.reps);
+            setRepsNoContadas(result.rejectedReps);
             setFeedback(result.feedback);
+            setConsejo(result.tip);
             setIsFormCorrect(result.isFormCorrect);
             setFase(result.phase);
-            setPrimaryAngle(result.primaryAngle);
+            const ahora = Date.now();
+            if (ahora - ultimoAnguloUiRef.current >= UI_ANGLE_THROTTLE_MS || result.repCompleted) {
+              ultimoAnguloUiRef.current = ahora;
+              setPrimaryAngle(result.primaryAngle);
+            }
 
-            // AUDIO: Si la repetición está bien o terminada
+            // AUDIO: repetición válida => número; repetición no contada => motivo
             if (result.repCompleted && result.reps > ultimaRepHabladaRef.current) {
               ultimaRepHabladaRef.current = result.reps;
-              if (result.isFormCorrect) {
-                // Dice la repetición completada con felicitación
-                hablar(`${result.reps}`, true);
-              } else {
-                const err = result.errors[0] || 'Cuida la postura';
-                hablar(`${result.reps}. ${err}`, true);
-              }
+              hablar(`${result.reps}`, true);
+            } else if (result.repRejected) {
+              hablar(`No contada. ${result.rejectionReason ?? 'Cuida la técnica'}`, true);
             } else if (!result.repCompleted) {
               // AUDIO: Si hay errores durante la ejecución
               if (result.errors.length > 0) {
@@ -318,6 +193,7 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
           } else {
             setHumanoDetectado(false);
             setFeedback('Aléjate un poco para ver tus articulaciones');
+            setConsejo(ejercicio.instruccionIA);
             setFase('invalid');
           }
         }
@@ -337,15 +213,15 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
   };
 
   const handleToggleCamara = () => {
-    if (webViewRef.current) {
-      webViewRef.current.injectJavaScript('window.toggleCameraFacing && window.toggleCameraFacing(); true;');
-    }
+    webViewRef.current?.injectJavaScript(SCRIPT_CAMBIAR_CAMARA);
   };
 
   const handleReiniciar = () => {
     if (engineRef.current) {
       engineRef.current.reset();
       setReps(0);
+      setRepsNoContadas(0);
+      setConsejo(null);
       setFeedback('Ponte de pie frente a la cámara');
       setIsFormCorrect(true);
       setFase('invalid');
@@ -356,14 +232,48 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
     }
   };
 
-  const handleFinalizar = () => {
+  // Reintentar tras un error de cámara: remonta el WebView (antes solo reiniciaba el conteo
+  // y la cámara seguía sin abrir).
+  const handleReintentarCamara = () => {
+    detenerCamara();
+    setErrorCamara(null);
+    setCargando(true);
+    setWebViewKey((k) => k + 1);
+  };
+
+  const cerrarDefinitivo = () => {
     try {
       Speech.stop();
     } catch (e) {}
+    detenerCamara();
     if (onCompletarSerie) {
-      onCompletarSerie(reps);
+      onCompletarSerie(engineRef.current?.reps ?? reps);
     }
     onCerrar();
+  };
+
+  // Finalizar: si hubo intentos se muestra el resumen con recomendaciones antes de cerrar.
+  const handleFinalizar = () => {
+    if (resumen) {
+      cerrarDefinitivo();
+      return;
+    }
+    const engine = engineRef.current;
+    if (!engine || engine.reps + engine.rejectedReps === 0) {
+      cerrarDefinitivo();
+      return;
+    }
+    try {
+      Speech.stop();
+    } catch (e) {}
+    detenerCamara();
+    const r = engine.getSessionSummary();
+    setResumen(r);
+    hablar(
+      `Serie terminada. ${r.validReps} repeticiones correctas` +
+        (r.rejectedReps > 0 ? ` y ${r.rejectedReps} no contadas.` : '.'),
+      true
+    );
   };
 
   const getFaseEtiqueta = (phase: string) => {
@@ -423,7 +333,10 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
       <View style={styles.container}>
         {/* WebView con Google MediaPipe y Cámara en Tiempo Real */}
         <WebView
+          key={webViewKey}
           ref={webViewRef}
+          onRenderProcessGone={handleReintentarCamara}
+          onContentProcessDidTerminate={handleReintentarCamara}
           originWhitelist={['*']}
           source={{ html: MEDIAPIPE_HTML, baseUrl: 'https://localhost' }}
           style={StyleSheet.absoluteFill}
@@ -451,7 +364,7 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
             <Ionicons name="alert-circle" size={32} color={ColoresApp.primario} style={{ marginBottom: 8 }} />
             <Text style={styles.errorTitulo}>ERROR AL ABRIR CÁMARA</Text>
             <Text style={styles.errorMensaje}>{errorCamara}</Text>
-            <TouchableOpacity style={styles.botonReintentar} onPress={handleReiniciar}>
+            <TouchableOpacity style={styles.botonReintentar} onPress={handleReintentarCamara}>
               <Text style={styles.botonReintentarTexto}>REINTENTAR</Text>
             </TouchableOpacity>
           </View>
@@ -560,6 +473,9 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
               <Text style={[styles.repNumero, { color: humanoDetectado ? colorPostura : '#64748B' }]}>
                 {reps}
               </Text>
+              {repsNoContadas > 0 && (
+                <Text style={styles.repNoContadas}>NO CONTADAS: {repsNoContadas}</Text>
+              )}
             </View>
           </View>
 
@@ -573,9 +489,16 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
                 color={humanoDetectado ? colorPostura : '#F59E0B'}
                 style={{ marginRight: 10 }}
               />
-              <Text style={styles.feedbackTexto} numberOfLines={2}>
-                {feedback}
-              </Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.feedbackTexto} numberOfLines={2}>
+                  {feedback}
+                </Text>
+                {consejo && (
+                  <Text style={styles.consejoTexto} numberOfLines={2}>
+                    {consejo}
+                  </Text>
+                )}
+              </View>
             </View>
 
             {/* Barra Flotante de Controles (Estilo Análisis Biométrico) */}
@@ -602,6 +525,44 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
           </View>
 
         </SafeAreaView>
+
+        {/* Resumen de la serie con recomendaciones (mismo estilo que el aviso de error) */}
+        {resumen && (
+          <View style={styles.errorContainer}>
+            <Ionicons name="stats-chart" size={32} color={ColoresApp.primario} style={{ marginBottom: 8 }} />
+            <Text style={styles.errorTitulo}>RESUMEN DE LA SERIE</Text>
+            <Text style={styles.errorMensaje}>
+              {resumen.validReps} correctas · {resumen.rejectedReps} no contadas
+            </Text>
+            <ScrollView style={styles.resumenScroll} contentContainerStyle={{ paddingBottom: 8 }}>
+              {resumen.frequentErrors.length > 0 && (
+                <>
+                  <Text style={styles.resumenSeccion}>A CORREGIR</Text>
+                  {resumen.frequentErrors.slice(0, 3).map((e) => (
+                    <Text key={e.message} style={styles.resumenItem}>
+                      • {e.message} ({e.count})
+                    </Text>
+                  ))}
+                </>
+              )}
+              {resumen.techniqueTips.length > 0 && (
+                <>
+                  <Text style={styles.resumenSeccion}>CONSEJOS DE TÉCNICA</Text>
+                  {resumen.techniqueTips.map((t) => (
+                    <Text key={t} style={styles.resumenItem}>• {t}</Text>
+                  ))}
+                </>
+              )}
+              <Text style={styles.resumenSeccion}>RECOMENDACIONES GENERALES</Text>
+              {resumen.generalTips.map((t) => (
+                <Text key={t} style={styles.resumenItem}>• {t}</Text>
+              ))}
+            </ScrollView>
+            <TouchableOpacity style={styles.botonReintentar} onPress={cerrarDefinitivo}>
+              <Text style={styles.botonReintentarTexto}>CERRAR</Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
     </Modal>
   );
@@ -864,11 +825,42 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   feedbackTexto: {
-    flex: 1,
     fontSize: 12,
     fontWeight: '800',
     color: '#000000',
     lineHeight: 16,
+  },
+  consejoTexto: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#64748B',
+    lineHeight: 15,
+    marginTop: 2,
+  },
+  repNoContadas: {
+    fontSize: 10,
+    fontWeight: '900',
+    color: ColoresApp.primario,
+    letterSpacing: 0.8,
+  },
+  resumenScroll: {
+    alignSelf: 'stretch',
+    maxHeight: 340,
+    marginBottom: 16,
+  },
+  resumenSeccion: {
+    fontSize: 11,
+    fontWeight: '900',
+    color: '#000000',
+    letterSpacing: 0.8,
+    marginTop: 10,
+    marginBottom: 4,
+  },
+  resumenItem: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#334155',
+    lineHeight: 18,
   },
 
   // Floating Bar Inferior
