@@ -33,6 +33,40 @@ export const SCRIPT_REANUDAR_CAMARA = 'window.reanudarCamara && window.reanudarC
 /** Script para alternar cámara frontal / trasera. */
 export const SCRIPT_CAMBIAR_CAMARA = 'window.toggleCameraFacing && window.toggleCameraFacing(); true;';
 
+/** Espera recomendada entre liberar un WebView de cámara y montar el siguiente. */
+export const ESPERA_MONTAJE_CAMARA_MS = 350;
+
+// -----------------------------------------------------------------------------
+// Seguro de instancia única: solo UN WebView puede tener la cámara a la vez.
+// Si se monta una pantalla nueva y la anterior no llegó a liberar la cámara
+// (entradas y salidas muy rápidas), se le ordena detenerse.
+// -----------------------------------------------------------------------------
+
+interface WebViewConCamara {
+  injectJavaScript: (script: string) => void;
+}
+type RefWebView = { current: WebViewConCamara | null };
+
+let duenoCamara: RefWebView | null = null;
+
+/** Registra `ref` como dueño de la cámara y detiene al dueño anterior, si lo había. */
+export function tomarCamara(ref: RefWebView): void {
+  if (duenoCamara && duenoCamara !== ref) {
+    try {
+      duenoCamara.current?.injectJavaScript(SCRIPT_DETENER_CAMARA);
+    } catch (e) {}
+  }
+  duenoCamara = ref;
+}
+
+/** Detiene la cámara de `ref` y lo quita del registro. */
+export function soltarCamara(ref: RefWebView): void {
+  try {
+    ref.current?.injectJavaScript(SCRIPT_DETENER_CAMARA);
+  } catch (e) {}
+  if (duenoCamara === ref) duenoCamara = null;
+}
+
 export const crearHtmlMediaPipe = ({ grosorLinea, radioPunto }: OpcionesHtmlMediaPipe): string => `
 <!DOCTYPE html>
 <html>
@@ -77,6 +111,8 @@ export const crearHtmlMediaPipe = ({ grosorLinea, radioPunto }: OpcionesHtmlMedi
     let fallosSeguidos = 0;
 
     const WATCHDOG_MS = 2500;
+    const VIGILANCIA_ZOOM_MS = 1500;
+    let zoomIntervalId = null;
 
     function sendToApp(msg) {
       if (window.ReactNativeWebView) {
@@ -142,6 +178,10 @@ export const crearHtmlMediaPipe = ({ grosorLinea, radioPunto }: OpcionesHtmlMedi
     }
 
     function liberarStream() {
+      if (zoomIntervalId !== null) {
+        clearInterval(zoomIntervalId);
+        zoomIntervalId = null;
+      }
       if (cameraStream) {
         cameraStream.getTracks().forEach(t => { try { t.stop(); } catch (e) {} });
         cameraStream = null;
@@ -186,15 +226,34 @@ export const crearHtmlMediaPipe = ({ grosorLinea, radioPunto }: OpcionesHtmlMedi
       loopId = requestAnimationFrame(frameLoop);
     }
 
-    // Fija el zoom en 1x (o el mínimo disponible) para que no se "acerque" la imagen.
+    // Zoom objetivo: 1x, o el mínimo soportado si el dispositivo no llega a 1x.
+    function zoomObjetivo(track) {
+      const caps = track.getCapabilities ? track.getCapabilities() : null;
+      if (!caps || !caps.zoom) return null;
+      return Math.min(Math.max(1, caps.zoom.min), caps.zoom.max);
+    }
+
+    // Fija el zoom en el objetivo para que no se "acerque" la imagen.
     async function fijarZoom(track) {
       try {
-        const caps = track.getCapabilities ? track.getCapabilities() : null;
-        if (caps && caps.zoom) {
-          const objetivo = Math.min(Math.max(1, caps.zoom.min), caps.zoom.max);
+        const objetivo = zoomObjetivo(track);
+        if (objetivo === null) return;
+        const actual = track.getSettings ? track.getSettings().zoom : undefined;
+        if (actual === undefined || Math.abs(actual - objetivo) > 0.01) {
           await track.applyConstraints({ advanced: [{ zoom: objetivo }] });
+          if (actual !== undefined) sendToApp({ type: 'ZOOM_CORREGIDO', de: actual, a: objetivo });
         }
       } catch (e) {}
+    }
+
+    // Vigilante periódico: algunos dispositivos cambian el zoom solos (enfoque automático,
+    // cambio de lente). Si el track se sale del objetivo, se vuelve a bloquear.
+    function vigilarZoom(track) {
+      if (zoomIntervalId !== null) clearInterval(zoomIntervalId);
+      zoomIntervalId = setInterval(function() {
+        if (detenida || !cameraStream || track.readyState !== 'live') return;
+        fijarZoom(track);
+      }, VIGILANCIA_ZOOM_MS);
     }
 
     function esperar(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -242,7 +301,10 @@ export const crearHtmlMediaPipe = ({ grosorLinea, radioPunto }: OpcionesHtmlMedi
         }
         cameraStream = stream;
         const track = cameraStream.getVideoTracks()[0];
-        if (track) await fijarZoom(track);
+        if (track) {
+          await fijarZoom(track);
+          vigilarZoom(track);
+        }
 
         video.srcObject = cameraStream;
         try { await video.play(); } catch (e) {}
@@ -284,7 +346,11 @@ export const crearHtmlMediaPipe = ({ grosorLinea, radioPunto }: OpcionesHtmlMedi
     });
 
     function init() {
+      // Protección contra doble arranque en la misma página.
+      if (window.__metafitCamaraIniciada) return;
+      window.__metafitCamaraIniciada = true;
       try {
+        if (poseInstance) { try { poseInstance.close(); } catch (e) {} }
         poseInstance = crearPose();
       } catch (err) {
         sendToApp({ type: 'CAMERA_ERROR', error: (err && err.message) || 'No se pudo iniciar MediaPipe.' });

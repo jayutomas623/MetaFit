@@ -1,11 +1,15 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
-import { UsuarioLogic } from '../models/Usuario';
+import type { PlanPersonalizado } from '../services/recomendador';
+import type { ModoFuente } from '../models/Plan';
 import { ColoresMetricas } from '../theme/colors';
 
 interface Props {
-  usuario: UsuarioLogic;
+  plan: PlanPersonalizado;
+  /** Calorías de las comidas marcadas hoy. */
+  consumidoKcal: number;
+  modo: ModoFuente;
 }
 
 // Taxonomía estricta de colores por nutriente
@@ -15,45 +19,15 @@ const COLORES_MACROS = {
   grasas: ColoresMetricas.grasa,      // #FF2D55 (mismo color para toda la grasa corporal)
 };
 
-export const TarjetaNutricionDashboard: React.FC<Props> = ({ usuario }) => {
-  const imc = usuario.imc;
-  const grasa = usuario.porcentajeGrasa;
-  const peso = usuario.peso;
-  const estatura = usuario.estatura;
-  const edad = usuario.edad;
-  const esHombre = usuario.genero === 'M';
-
-  // Cálculo TMB + Factor de Actividad
-  const tmb = esHombre
-    ? 10 * peso + 6.25 * estatura - 5 * edad + 5
-    : 10 * peso + 6.25 * estatura - 5 * edad - 161;
-  const mantenimiento = Math.round(tmb * 1.4);
-
-  let caloriasObjetivo = mantenimiento;
-  let pctProteina = 35;
-  let pctCarbos = 40;
-  let pctGrasas = 25;
-
-  if (imc < 18.5) {
-    caloriasObjetivo = mantenimiento + 400;
-    pctProteina = 25;
-    pctCarbos = 55;
-    pctGrasas = 20;
-  } else if (imc >= 25.0 || grasa > (esHombre ? 22 : 30)) {
-    caloriasObjetivo = Math.max(1400, mantenimiento - 450);
-    pctProteina = 40;
-    pctCarbos = 35;
-    pctGrasas = 25;
-  } else {
-    caloriasObjetivo = mantenimiento;
-    pctProteina = 35;
-    pctCarbos = 40;
-    pctGrasas = 25;
-  }
-
-  const gramosProteina = Math.round((caloriasObjetivo * (pctProteina / 100)) / 4);
-  const gramosCarbos = Math.round((caloriasObjetivo * (pctCarbos / 100)) / 4);
-  const gramosGrasas = Math.round((caloriasObjetivo * (pctGrasas / 100)) / 9);
+export const TarjetaNutricionDashboard: React.FC<Props> = ({ plan, consumidoKcal, modo }) => {
+  // Objetivo y macros del plan activo (misma fuente que Plan personalizado, Nutrición y Rutinas)
+  const { calorias: caloriasObjetivo, macros, enfoque } = plan;
+  const pctProteina = macros.pctProteina;
+  const pctCarbos = macros.pctCarbos;
+  const pctGrasas = macros.pctGrasas;
+  const gramosProteina = macros.proteinaG;
+  const gramosCarbos = macros.carbosG;
+  const gramosGrasas = macros.grasasG;
 
   // Parámetros de la Gráfica Cuadrada Minimalista
   const size = 146;
@@ -73,13 +47,10 @@ export const TarjetaNutricionDashboard: React.FC<Props> = ({ usuario }) => {
   const angleCarbos = -90 + (pctProteina / 100) * 360;
   const angleGrasas = -90 + ((pctProteina + pctCarbos) / 100) * 360;
 
-  // Diagnóstico contextual de recomendación calórica
-  let tipoRecomendacion = 'META DIARIA';
-  if (imc >= 25.0 || grasa > (esHombre ? 22 : 30)) {
-    tipoRecomendacion = 'LÍMITE DÉFICIT';
-  } else if (imc < 18.5) {
-    tipoRecomendacion = 'MÍNIMO SUPERÁVIT';
-  }
+  // Diagnóstico contextual: enfoque del plan + consumo registrado hoy
+  const etiquetaEnfoque =
+    enfoque === 'deficit' ? 'LÍMITE DÉFICIT' : enfoque === 'superavit' ? 'MÍNIMO SUPERÁVIT' : 'META DIARIA';
+  const tipoRecomendacion = `HOY ${Math.round(consumidoKcal)} KCAL · ${modo === 'ia' ? 'PLAN IA' : 'DIETA PROPIA'} · ${etiquetaEnfoque}`;
 
   return (
     <View style={styles.card}>

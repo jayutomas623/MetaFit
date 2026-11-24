@@ -2,7 +2,9 @@
 
 > Plataforma de entrenamiento, rutinas y seguimiento de condición física con **backend en Django REST Framework** y **app móvil en Expo / React Native (TypeScript)**. Incluye medición de peso y estatura con la cámara y conteo de repeticiones con visión por computadora (Google MediaPipe Pose).
 
-👉 **Para levantar el proyecto paso a paso (laptop + celular con Expo Go), sigan [GUIA_EJECUCION.md](GUIA_EJECUCION.md).**
+👉 **¿Eres colaborador y acabas de descargar el proyecto? Empieza por [GUIA_COLABORADOR.md](GUIA_COLABORADOR.md)**: instalación paso a paso, uso con Claude Code, **zonas protegidas que no se deben modificar** y tareas pendientes.
+
+👉 Detalles de red y problemas frecuentes (laptop + celular con Expo Go): [GUIA_EJECUCION.md](GUIA_EJECUCION.md).
 
 ---
 
@@ -117,10 +119,17 @@ Panel de administración: `http://127.0.0.1:8000/admin/`. Roles: `Usuario` (por 
 
 ## ⚙️ Cómo funciona
 
-- **Sesión:** hoy el login y el registro de la app guardan la sesión **solo en el celular** (zustand). La app **todavía no llama al backend**; conectarlo está pendiente. La URL del backend ya se configura en `frontend/.env.local`.
+- **Datos locales:** el login, el registro, el plan, la dieta, las rutinas y el avance diario se guardan **solo en el celular** (Zustand + AsyncStorage). La app **todavía no llama al backend**, a propósito. La URL del backend ya se configura en `frontend/.env.local`.
+- **Plan personalizado, Nutrición y Rutinas:** el Plan personalizado calcula calorías, macros, agua, menú y rutina semanal según tus medidas, tu objetivo y tu frecuencia de entrenamiento. Con "Seguir este plan" se activa en Nutrición y en Mis Rutinas, donde también puedes usar tu propia dieta o tus propias rutinas y marcar lo que cumpliste cada día. El Dashboard muestra el plan activo y el avance de hoy.
 - **Peso y estatura con cámara:** desde el Registro se abre la cámara. MediaPipe detecta el cuerpo y la app estima estatura (de la coronilla al suelo) y peso (por el ancho de la silueta) directamente en el celular. La medida se fija al quedarse quieto o con CAPTURAR, y se guarda levantando la mano o con GUARDAR.
-- **Ejercicios con IA:** en Ejercicios, el motor (`exerciseEngine.ts`) calcula el ángulo de la articulación clave y sigue cada repetición (en posición → descenso → fondo → subida). Una repetición **solo cuenta** si llega al rango completo, vuelve a la posición inicial, no tiene errores de postura sostenidos y no es demasiado rápida. Si no, se marca como **"No contada"** con su motivo y un consejo. Al finalizar la serie se muestra un resumen con recomendaciones.
-- **La matriz (`backend/usuarios/ia_service.py`):** capa de calibración geométrica que ajusta la salida de la red neuronal con la caja de la persona detectada. Está calibrada para una persona a **2 m de distancia con zoom 1x**. No se debe modificar.
+- **Ejercicios con IA:** en Ejercicios, el motor (`exerciseEngine.ts`) calcula el ángulo de la articulación clave y sigue cada repetición (en posición → descenso → fondo → subida). Una repetición **solo cuenta** si llega al rango completo, vuelve a la posición inicial, no tiene errores de postura sostenidos y no es demasiado rápida. Si no, se marca como **"No contada"** con su motivo y un consejo. Al finalizar la serie se muestra un resumen con recomendaciones. En los ejercicios de un solo lado, la cámara cuenta el Lado 1, pide girar y luego cuenta el Lado 2.
+- **Zonas protegidas (no modificar):**
+  - la matriz de calibración `backend/usuarios/ia_service.py` y el modelo `.pth`;
+  - las fórmulas biométricas de `PantallaCamaraBiometrica.tsx`;
+  - el motor 2D de `exerciseEngine.ts`;
+  - la captura de cámara de `mediapipeWebView.ts`.
+
+  El detalle está en [GUIA_COLABORADOR.md](GUIA_COLABORADOR.md#1-zonas-protegidas-no-modificar).
 
 ---
 

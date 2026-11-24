@@ -17,17 +17,25 @@ import { useCameraPermissions } from 'expo-camera';
 import Svg, { Circle } from 'react-native-svg';
 import * as Speech from 'expo-speech';
 import { Ejercicio } from '../models/Ejercicio';
-import { ExerciseEngine, AnalysisResult, SessionSummary } from '../services/exerciseEngine';
+import { ExerciseEngine, AnalysisResult, SessionSummary, esUnilateral } from '../services/exerciseEngine';
 import { ColoresApp } from '../theme/colors';
 import {
   crearHtmlMediaPipe,
   SCRIPT_CAMBIAR_CAMARA,
   SCRIPT_DETENER_CAMARA,
   SCRIPT_REANUDAR_CAMARA,
+  tomarCamara,
+  soltarCamara,
 } from '../services/mediapipeWebView';
 
 /** Intervalo mínimo entre actualizaciones del ángulo en pantalla (evita re-render a 30 FPS). */
 const UI_ANGLE_THROTTLE_MS = 100;
+/** Meta de repeticiones por defecto (por lado en unilaterales) si se abre libre. */
+const META_POR_DEFECTO = 10;
+/** Pausa para girar de perfil entre Lado 1 y Lado 2 (sin contar movimientos). */
+const SEGUNDOS_TRANSICION = 4;
+/** Tiempo que la guía de ubicación queda visible al abrir la cámara. */
+const GUIA_VISIBLE_MS = 8000;
 
 // Geometría para micro-gráfica circular (estilo Análisis Biométrico)
 const GAUGE_SIZE = 46;
@@ -36,11 +44,28 @@ const GAUGE_RADIUS = 18;
 const GAUGE_CENTER = GAUGE_SIZE / 2;
 const GAUGE_CIRCUMFERENCE = 2 * Math.PI * GAUGE_RADIUS;
 
+/** Fase de la serie: unilaterales recorren lado1 → transicion → lado2 → completa. */
+type FaseSerie = 'lado1' | 'transicion' | 'lado2' | 'completa';
+
+export interface DetalleSerie {
+  /** Repeticiones válidas totales de la serie. */
+  reps: number;
+  unilateral: boolean;
+  lado1: number;
+  lado2: number;
+  /** Meta usada (por lado en unilaterales). */
+  meta: number;
+  /** true si se alcanzó la meta (en ambos lados si es unilateral). */
+  metaCumplida: boolean;
+}
+
 interface Props {
   visible: boolean;
   ejercicio: Ejercicio | null;
   onCerrar: () => void;
-  onCompletarSerie?: (reps: number) => void;
+  /** Meta de repeticiones (por lado en unilaterales). Por defecto 10. */
+  metaReps?: number;
+  onCompletarSerie?: (reps: number, detalle: DetalleSerie) => void;
 }
 
 // HTML compartido de cámara + MediaPipe (ver src/services/mediapipeWebView.ts)
@@ -50,6 +75,7 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
   visible,
   ejercicio,
   onCerrar,
+  metaReps,
   onCompletarSerie,
 }) => {
   const [permission, requestPermission] = useCameraPermissions();
@@ -66,14 +92,49 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
   const [resumen, setResumen] = useState<SessionSummary | null>(null);
   const [webViewKey, setWebViewKey] = useState(0);
 
+  // Flujo guiado de la serie
+  const [meta, setMeta] = useState(metaReps ?? META_POR_DEFECTO);
+  const [faseSerie, setFaseSerieState] = useState<FaseSerie>('lado1');
+  const [repsLado1, setRepsLado1] = useState(0);
+  const [cuentaTransicion, setCuentaTransicion] = useState(0);
+  const [mostrarGuia, setMostrarGuia] = useState(true);
+
   const engineRef = useRef<ExerciseEngine | null>(null);
   const webViewRef = useRef<any>(null);
   const ultimoAnguloUiRef = useRef<number>(0);
+  const faseSerieRef = useRef<FaseSerie>('lado1');
+  const offsetLado2Ref = useRef<number>(0);
+  const metaRef = useRef<number>(meta);
+  const guiaHabladaRef = useRef<boolean>(false);
+  const timersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  const intervaloTransicionRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  metaRef.current = meta;
 
   // Control de audio mediante expo-speech (estilo Análisis Biométrico)
   const ultimoAudioRef = useRef<number>(0);
   const ultimaRepHabladaRef = useRef<number>(0);
-  const ultimoErrorHabladoRef = useRef<string>('');
+
+  const unilateral = ejercicio ? esUnilateral(ejercicio.engineType) : false;
+
+  const setFaseSerie = (f: FaseSerie) => {
+    faseSerieRef.current = f;
+    setFaseSerieState(f);
+  };
+
+  const programar = (fn: () => void, ms: number) => {
+    const id = setTimeout(() => {
+      timersRef.current.delete(id);
+      fn();
+    }, ms);
+    timersRef.current.add(id);
+  };
+
+  const limpiarTemporizadores = () => {
+    timersRef.current.forEach((id) => clearTimeout(id));
+    timersRef.current.clear();
+    if (intervaloTransicionRef.current) clearInterval(intervaloTransicionRef.current);
+    intervaloTransicionRef.current = null;
+  };
 
   const hablar = (texto: string, forzar: boolean = false) => {
     const ahora = Date.now();
@@ -89,20 +150,24 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
         pitch: 1.0,
       });
       ultimoAudioRef.current = ahora;
+      engineRef.current?.marcarVoz(ahora);
     } catch (e) {}
   };
 
-  // Detener voz al desmontar o cerrar
+  // Detener voz y temporizadores al desmontar
   useEffect(() => {
     return () => {
+      limpiarTemporizadores();
       try {
         Speech.stop();
       } catch (e) {}
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Reiniciar estado cuando se abre un ejercicio
   useEffect(() => {
+    limpiarTemporizadores();
     if (visible && ejercicio) {
       engineRef.current = new ExerciseEngine(ejercicio.engineType);
       setReps(0);
@@ -116,16 +181,24 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
       setRepsNoContadas(0);
       setConsejo(null);
       setResumen(null);
+      setMeta(metaReps ?? META_POR_DEFECTO);
+      setFaseSerie('lado1');
+      setRepsLado1(0);
+      setCuentaTransicion(0);
+      setMostrarGuia(true);
+      offsetLado2Ref.current = 0;
       ultimoAudioRef.current = 0;
       ultimaRepHabladaRef.current = 0;
-      ultimoErrorHabladoRef.current = '';
       ultimoAnguloUiRef.current = 0;
+      guiaHabladaRef.current = false;
+      tomarCamara(webViewRef);
     } else {
       try {
         Speech.stop();
       } catch (e) {}
     }
-  }, [visible, ejercicio]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, ejercicio, metaReps]);
 
   // Detener / reanudar la cámara cuando la app pasa a segundo plano.
   useEffect(() => {
@@ -140,23 +213,83 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
 
   if (!visible || !ejercicio) return null;
 
-  // Libera la cámara dentro del WebView antes de desmontarlo, para que la siguiente
-  // apertura no encuentre el dispositivo ocupado.
+  // Libera la cámara dentro del WebView antes de desmontarlo (seguro de instancia única).
   const detenerCamara = () => {
-    webViewRef.current?.injectJavaScript(SCRIPT_DETENER_CAMARA);
+    soltarCamara(webViewRef);
+  };
+
+  /** Repeticiones válidas del lado / serie en curso. */
+  const repsDeFase = (total: number) =>
+    unilateral && faseSerieRef.current !== 'lado1' ? total - offsetLado2Ref.current : total;
+
+  // Guía de ubicación: se muestra y se dice al abrir la cámara (una vez por apertura).
+  const anunciarGuia = () => {
+    const engine = engineRef.current;
+    if (!engine || guiaHabladaRef.current) return;
+    guiaHabladaRef.current = true;
+    setMostrarGuia(true);
+    hablar(unilateral ? `${engine.guiaCamara} Comienza con el primer lado.` : engine.guiaCamara, true);
+    programar(() => setMostrarGuia(false), GUIA_VISIBLE_MS);
+  };
+
+  // Lado 1 terminado: aviso, pausa de transición sin contar y arranque del Lado 2.
+  const iniciarCambioLado = () => {
+    const engine = engineRef.current;
+    if (!engine || faseSerieRef.current !== 'lado1') return;
+    setFaseSerie('transicion');
+    setRepsLado1(engine.reps);
+    setCuentaTransicion(SEGUNDOS_TRANSICION);
+    setFeedback('Cambio de lado: gira de perfil');
+    setConsejo(engine.guiaCamara);
+    hablar('¡Excelente! Ahora gira de perfil para trabajar el otro lado.', true);
+
+    let restante = SEGUNDOS_TRANSICION;
+    if (intervaloTransicionRef.current) clearInterval(intervaloTransicionRef.current);
+    intervaloTransicionRef.current = setInterval(() => {
+      restante -= 1;
+      setCuentaTransicion(restante);
+      if (restante <= 0) {
+        if (intervaloTransicionRef.current) clearInterval(intervaloTransicionRef.current);
+        intervaloTransicionRef.current = null;
+        // Los movimientos durante el giro no se procesaron; se arranca limpio.
+        engine.reiniciarSeguimiento();
+        offsetLado2Ref.current = engine.reps;
+        setReps(engine.reps);
+        setFaseSerie('lado2');
+        setFeedback('Lado 2: inicia el movimiento');
+        hablar('Comienza con el segundo lado.', true);
+      }
+    }, 1000);
+  };
+
+  // Meta alcanzada (Lado 2 o serie bilateral): se anuncia y se abre el resumen.
+  const completarSerie = () => {
+    if (faseSerieRef.current === 'completa') return;
+    setFaseSerie('completa');
+    hablar('¡Serie completada!', true);
+    programar(() => handleFinalizar(), 1500);
+  };
+
+  const revisarMeta = (totalReps: number) => {
+    const enFase = repsDeFase(totalReps);
+    if (enFase < metaRef.current) return;
+    if (unilateral && faseSerieRef.current === 'lado1') iniciarCambioLado();
+    else if (faseSerieRef.current === 'lado1' || faseSerieRef.current === 'lado2') completarSerie();
   };
 
   // Recepción de datos REALES desde Google MediaPipe
   const handleWebViewMessage = (event: WebViewMessageEvent) => {
     try {
       const data = JSON.parse(event.nativeEvent.data);
+      const contando = faseSerieRef.current === 'lado1' || faseSerieRef.current === 'lado2';
 
       if (data.type === 'LANDMARKS' && Array.isArray(data.landmarks) && data.landmarks.length > 0) {
         setCargando(false);
         setErrorCamara(null);
         setHumanoDetectado(true);
 
-        if (engineRef.current && !resumen) {
+        // Durante la transición de lado (o con la serie ya completa) no se cuenta nada.
+        if (engineRef.current && !resumen && contando) {
           const result: AnalysisResult = engineRef.current.processLandmarks(data.landmarks);
 
           if (result.trackingValid) {
@@ -172,37 +305,36 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
               setPrimaryAngle(result.primaryAngle);
             }
 
-            // AUDIO: repetición válida => número; repetición no contada => motivo
+            // AUDIO: repetición válida => número del lado/serie; no contada => motivo
             if (result.repCompleted && result.reps > ultimaRepHabladaRef.current) {
               ultimaRepHabladaRef.current = result.reps;
-              hablar(`${result.reps}`, true);
+              hablar(`${repsDeFase(result.reps)}`, true);
+              revisarMeta(result.reps);
             } else if (result.repRejected) {
               hablar(`No contada. ${result.rejectionReason ?? 'Cuida la técnica'}`, true);
-            } else if (!result.repCompleted) {
-              // AUDIO: Si hay errores durante la ejecución
-              if (result.errors.length > 0) {
-                const primerError = result.errors[0];
-                if (primerError !== ultimoErrorHabladoRef.current || Date.now() - ultimoAudioRef.current > 4000) {
-                  ultimoErrorHabladoRef.current = primerError;
-                  hablar(primerError, false);
-                }
-              } else {
-                ultimoErrorHabladoRef.current = '';
-              }
             }
           } else {
             setHumanoDetectado(false);
             setFeedback('Aléjate un poco para ver tus articulaciones');
-            setConsejo(ejercicio.instruccionIA);
+            setConsejo(engineRef.current.guiaCamara);
             setFase('invalid');
           }
+
+          // AUDIO: corrección por postura sostenida o mala detección (~3 s, cooldown 5 s)
+          if (result.vozCorreccion) hablar(result.vozCorreccion, true);
         }
       } else if (data.type === 'NO_HUMAN') {
         setHumanoDetectado(false);
         setFeedback('No se detecta cuerpo. Colócate frente a la cámara.');
+        setConsejo(engineRef.current?.guiaCamara ?? null);
         setFase('invalid');
+        if (engineRef.current && !resumen && contando) {
+          const voz = engineRef.current.processNoHuman();
+          if (voz) hablar(voz, true);
+        }
       } else if (data.type === 'CAMERA_READY') {
         setCargando(false);
+        anunciarGuia();
       } else if (data.type === 'CAMERA_ERROR') {
         setCargando(false);
         setErrorCamara(data.error || 'No se pudo acceder a la cámara.');
@@ -218,6 +350,7 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
 
   const handleReiniciar = () => {
     if (engineRef.current) {
+      limpiarTemporizadores();
       engineRef.current.reset();
       setReps(0);
       setRepsNoContadas(0);
@@ -226,28 +359,48 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
       setIsFormCorrect(true);
       setFase('invalid');
       setPrimaryAngle(0);
+      setFaseSerie('lado1');
+      setRepsLado1(0);
+      setCuentaTransicion(0);
+      offsetLado2Ref.current = 0;
       ultimaRepHabladaRef.current = 0;
-      ultimoErrorHabladoRef.current = '';
-      hablar('Reinicio', true);
+      hablar(unilateral ? 'Reinicio. Comienza con el primer lado.' : 'Reinicio', true);
     }
   };
 
-  // Reintentar tras un error de cámara: remonta el WebView (antes solo reiniciaba el conteo
-  // y la cámara seguía sin abrir).
+  const cambiarMeta = (delta: number) => {
+    setMeta((m) => Math.min(50, Math.max(1, m + delta)));
+  };
+
+  // Reintentar tras un error de cámara: remonta el WebView.
   const handleReintentarCamara = () => {
     detenerCamara();
     setErrorCamara(null);
     setCargando(true);
     setWebViewKey((k) => k + 1);
+    tomarCamara(webViewRef);
+  };
+
+  const detalleSerie = (): DetalleSerie => {
+    const total = engineRef.current?.reps ?? reps;
+    const enTransicionOMas = faseSerieRef.current !== 'lado1';
+    const lado1 = unilateral ? (enTransicionOMas ? repsLado1 || offsetLado2Ref.current : total) : total;
+    const lado2 = unilateral && faseSerieRef.current !== 'lado1' && faseSerieRef.current !== 'transicion'
+      ? total - offsetLado2Ref.current
+      : 0;
+    const metaCumplida = unilateral ? lado1 >= meta && lado2 >= meta : total >= meta;
+    return { reps: total, unilateral, lado1, lado2, meta, metaCumplida };
   };
 
   const cerrarDefinitivo = () => {
+    limpiarTemporizadores();
     try {
       Speech.stop();
     } catch (e) {}
     detenerCamara();
     if (onCompletarSerie) {
-      onCompletarSerie(engineRef.current?.reps ?? reps);
+      const d = detalleSerie();
+      onCompletarSerie(d.reps, d);
     }
     onCerrar();
   };
@@ -263,6 +416,7 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
       cerrarDefinitivo();
       return;
     }
+    limpiarTemporizadores();
     try {
       Speech.stop();
     } catch (e) {}
@@ -299,6 +453,12 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
   // Gráfica circular para Ángulo (rango 0 - 180)
   const ratioAngulo = Math.min(Math.max(primaryAngle / 180, 0), 1);
   const offsetAngulo = GAUGE_CIRCUMFERENCE - ratioAngulo * GAUGE_CIRCUMFERENCE;
+
+  const repsVisibles = unilateral && faseSerie !== 'lado1' ? reps - offsetLado2Ref.current : reps;
+  const etiquetaContador = unilateral
+    ? `LADO ${faseSerie === 'lado1' ? 1 : 2} DE 2 · META ${meta}`
+    : `REPETICIONES · META ${meta}`;
+  const resumenDetalle = resumen ? detalleSerie() : null;
 
   // Permiso de Cámara
   if (!permission || !permission.granted) {
@@ -449,7 +609,11 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
                 <Text style={styles.tarjetaTitulo}>FASE DEL MOTOR</Text>
                 <View style={styles.datosColumnaCentral}>
                   <Text style={styles.faseValorTexto} numberOfLines={1}>
-                    {humanoDetectado ? getFaseEtiqueta(fase) : 'ESPERANDO'}
+                    {faseSerie === 'transicion'
+                      ? 'CAMBIO DE LADO'
+                      : humanoDetectado
+                      ? getFaseEtiqueta(fase)
+                      : 'ESPERANDO'}
                   </Text>
                   <View style={[styles.posturaPill, { backgroundColor: isFormCorrect ? '#ECFDF5' : '#FEF2F2' }]}>
                     <Text
@@ -464,23 +628,67 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
                 </View>
               </View>
             </View>
+
+            {/* Guía de ubicación frente a la cámara (al empezar o si no se ve al usuario) */}
+            {(mostrarGuia || !humanoDetectado) && faseSerie !== 'transicion' && engineRef.current && (
+              <View style={styles.guiaCamara} pointerEvents="none">
+                <Ionicons name="videocam-outline" size={16} color={ColoresApp.primario} style={{ marginRight: 8 }} />
+                <Text style={styles.guiaCamaraTexto} numberOfLines={2}>
+                  {engineRef.current.guiaCamara}
+                  {unilateral && faseSerie === 'lado1' ? ' Comienza con el primer lado.' : ''}
+                </Text>
+              </View>
+            )}
           </View>
 
-          {/* 2. SECCIÓN CENTRAL: CONTADOR GIGANTE DE REPETICIONES (VISIBLE A DISTANCIA) */}
+          {/* 2. SECCIÓN CENTRAL: CONTADOR GIGANTE (o aviso de cambio de lado) */}
           <View style={styles.centerHud} pointerEvents="none">
-            <View style={styles.repBadgeContenedor}>
-              <Text style={styles.repLabel}>REPETICIONES</Text>
-              <Text style={[styles.repNumero, { color: humanoDetectado ? colorPostura : '#64748B' }]}>
-                {reps}
-              </Text>
-              {repsNoContadas > 0 && (
-                <Text style={styles.repNoContadas}>NO CONTADAS: {repsNoContadas}</Text>
+            {faseSerie === 'transicion' ? (
+              <View style={styles.repBadgeContenedor}>
+                <Text style={styles.repLabel}>¡LADO 1 COMPLETO!</Text>
+                <Text style={styles.transicionTexto}>Gira de perfil para trabajar el otro lado</Text>
+                <Text style={[styles.repNumero, { color: ColoresApp.primario }]}>{Math.max(cuentaTransicion, 0)}</Text>
+              </View>
+            ) : (
+              <View style={styles.repBadgeContenedor}>
+                <Text style={styles.repLabel}>{etiquetaContador}</Text>
+                <Text style={[styles.repNumero, { color: humanoDetectado ? colorPostura : '#64748B' }]}>
+                  {repsVisibles}
+                </Text>
+                {unilateral && faseSerie !== 'lado1' && (
+                  <Text style={styles.repNoContadas}>LADO 1: {repsLado1}</Text>
+                )}
+                {repsNoContadas > 0 && (
+                  <Text style={styles.repNoContadas}>NO CONTADAS: {repsNoContadas}</Text>
+                )}
+              </View>
+            )}
+          </View>
+
+          {/* 3. SECCIÓN INFERIOR: Meta + Feedback Banner + Navbar Flotante */}
+          <View pointerEvents="box-none">
+            {/* Controles de la serie: meta editable y cambio manual de lado */}
+            <View style={styles.controlesSerie}>
+              <View style={styles.metaStepper}>
+                <TouchableOpacity style={styles.metaBoton} onPress={() => cambiarMeta(-1)} activeOpacity={0.8}>
+                  <Ionicons name="remove" size={16} color="#000000" />
+                </TouchableOpacity>
+                <Text style={styles.metaTexto}>
+                  META {meta}
+                  {unilateral ? ' / LADO' : ''}
+                </Text>
+                <TouchableOpacity style={styles.metaBoton} onPress={() => cambiarMeta(1)} activeOpacity={0.8}>
+                  <Ionicons name="add" size={16} color="#000000" />
+                </TouchableOpacity>
+              </View>
+              {unilateral && faseSerie === 'lado1' && (
+                <TouchableOpacity style={styles.botonCambiarLado} onPress={iniciarCambioLado} activeOpacity={0.85}>
+                  <Ionicons name="swap-horizontal" size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+                  <Text style={styles.botonCambiarLadoTexto}>CAMBIAR DE LADO</Text>
+                </TouchableOpacity>
               )}
             </View>
-          </View>
 
-          {/* 3. SECCIÓN INFERIOR: Feedback Banner + Navbar Flotante */}
-          <View pointerEvents="box-none">
             {/* Banner de Feedback en Tiempo Real */}
             <View style={[styles.feedbackBanner, { borderColor: colorPostura }]}>
               <Ionicons
@@ -533,6 +741,9 @@ export const ModalCamaraBiomecanica: React.FC<Props> = ({
             <Text style={styles.errorTitulo}>RESUMEN DE LA SERIE</Text>
             <Text style={styles.errorMensaje}>
               {resumen.validReps} correctas · {resumen.rejectedReps} no contadas
+              {resumenDetalle?.unilateral
+                ? `\nLado 1: ${resumenDetalle.lado1} · Lado 2: ${resumenDetalle.lado2} (meta ${resumenDetalle.meta} por lado)`
+                : ''}
             </Text>
             <ScrollView style={styles.resumenScroll} contentContainerStyle={{ paddingBottom: 8 }}>
               {resumen.frequentErrors.length > 0 && (
@@ -836,6 +1047,80 @@ const styles = StyleSheet.create({
     color: '#64748B',
     lineHeight: 15,
     marginTop: 2,
+  },
+  guiaCamara: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: '#F1F5F9',
+    elevation: 2,
+  },
+  guiaCamaraTexto: {
+    flex: 1,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#000000',
+    lineHeight: 15,
+  },
+  transicionTexto: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#000000',
+    textAlign: 'center',
+    marginTop: 4,
+    maxWidth: 220,
+  },
+  controlesSerie: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+    gap: 8,
+  },
+  metaStepper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: '#F1F5F9',
+    elevation: 2,
+  },
+  metaBoton: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#F8FAFC',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  metaTexto: {
+    fontSize: 11,
+    fontWeight: '900',
+    color: '#000000',
+    marginHorizontal: 8,
+    letterSpacing: 0.4,
+  },
+  botonCambiarLado: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#000000',
+    borderRadius: 20,
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+  },
+  botonCambiarLadoTexto: {
+    fontSize: 11,
+    fontWeight: '900',
+    color: '#FFFFFF',
+    letterSpacing: 0.4,
   },
   repNoContadas: {
     fontSize: 10,

@@ -15,16 +15,10 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { ColoresApp, ColoresMetricas } from '../theme/colors';
 import { useStore } from '../services/useStore';
-
-interface AlimentoItem {
-  id: string;
-  nombre: string;
-  categoriaTipo: 'proteina' | 'carbo' | 'grasa' | 'verdura' | 'fruta';
-  categoria: string;
-  calorias: string;
-  beneficio: string;
-  imagen: string;
-}
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { RootStackParamList } from '../navigation/AppNavigator';
+import { SeccionNutricion } from '../components/plan/SeccionNutricion';
 
 interface ResultadoEscaneo {
   plato: string;
@@ -45,7 +39,7 @@ export const PantallaNutricion = ({ route }: any) => {
   const [analizandoFoto, setAnalizandoFoto] = useState(false);
   const [fotoCapturada, setFotoCapturada] = useState<string | null>(null);
   const [resultadoEscaneo, setResultadoEscaneo] = useState<ResultadoEscaneo | null>(null);
-  const [alimentoDetalle, setAlimentoDetalle] = useState<AlimentoItem | null>(null);
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
 
   // Si viene del Dashboard con la orden de abrir cámara
   useEffect(() => {
@@ -53,116 +47,6 @@ export const PantallaNutricion = ({ route }: any) => {
       setModalCamaraVisible(true);
     }
   }, [route?.params?.abrirCamara]);
-
-  // Alimentos recomendados: organizados por categorías con frutas y verduras por separado
-  const alimentos: AlimentoItem[] = [
-    // 1. PROTEÍNAS
-    {
-      id: '1',
-      nombre: 'Pechuga de Pollo',
-      categoriaTipo: 'proteina',
-      categoria: 'Proteína Magra',
-      calorias: '~165 kcal / 100g',
-      beneficio: '31g de proteína pura para construir y reparar masa muscular.',
-      imagen: 'https://images.unsplash.com/photo-1604503468506-a8da13d82791?w=400&q=80',
-    },
-    {
-      id: '2',
-      nombre: 'Salmón a la Plancha',
-      categoriaTipo: 'proteina',
-      categoria: 'Proteína & Omega 3',
-      calorias: '~206 kcal / 100g',
-      beneficio: 'Omega-3 EPA y DHA con proteína de máxima asimilación biológica.',
-      imagen: 'https://images.unsplash.com/photo-1467003909585-2f8a72700288?w=400&q=80',
-    },
-
-    // 2. CARBOHIDRATOS
-    {
-      id: '3',
-      nombre: 'Puré de Batata / Papa',
-      categoriaTipo: 'carbo',
-      categoria: 'Carbohidrato Complejo',
-      calorias: '~90 kcal / 100g',
-      beneficio: 'Recarga glucógeno muscular rápidamente sin pesadez estomacal.',
-      imagen: 'https://images.unsplash.com/photo-1608897013039-887f21d8c804?w=400&q=80',
-    },
-    {
-      id: '4',
-      nombre: 'Avena Integral',
-      categoriaTipo: 'carbo',
-      categoria: 'Fibra & Saciedad',
-      calorias: '~120 kcal / taza',
-      beneficio: 'Energía sostenida y betaglucanos para regular el apetito diurno.',
-      // Foto fidedigna de avena natural en tazón
-      imagen: 'https://images.unsplash.com/photo-1584776296944-ab6fb57b0bdd?w=400&q=80',
-    },
-
-    // 3. GRASAS SALUDABLES
-    {
-      id: '5',
-      nombre: 'Aguacate',
-      categoriaTipo: 'grasa',
-      categoria: 'Grasas Saludables',
-      calorias: '~160 kcal / 100g',
-      beneficio: 'Ácidos grasos monoinsaturados esenciales para el balance hormonal.',
-      imagen: 'https://images.unsplash.com/photo-1523049673857-eb18f1d7b578?w=400&q=80',
-    },
-    {
-      id: '6',
-      nombre: 'Nueces & Almendras',
-      categoriaTipo: 'grasa',
-      categoria: 'Grasas Saludables',
-      calorias: '~180 kcal / 30g',
-      beneficio: 'Vitamina E, magnesio y grasas cardiosaludables protectoras.',
-      imagen: 'https://images.unsplash.com/photo-1508746829417-e6f548d8d6ed?w=400&q=80',
-    },
-
-    // 4. VERDURAS (Por separado)
-    {
-      id: '7',
-      nombre: 'Espinacas Crudas',
-      categoriaTipo: 'verdura',
-      categoria: 'Verduras Verdes',
-      calorias: '~23 kcal / 100g',
-      beneficio: 'Hierro vegetal, clorofila y magnesio alcalinizante.',
-      imagen: 'https://images.unsplash.com/photo-1576045057995-568f588f82fb?w=400&q=80',
-    },
-    {
-      id: '8',
-      nombre: 'Brócoli al Vapor',
-      categoriaTipo: 'verdura',
-      categoria: 'Verduras Crucíferas',
-      calorias: '~35 kcal / 100g',
-      beneficio: 'Sulforafano antioxidante y fibra prebiótica digestiva.',
-      imagen: 'https://images.unsplash.com/photo-1540420773420-3366772f4999?w=400&q=80',
-    },
-
-    // 5. FRUTAS (Por separado)
-    {
-      id: '9',
-      nombre: 'Manzana Fresca',
-      categoriaTipo: 'fruta',
-      categoria: 'Frutas Frescas',
-      calorias: '~52 kcal / 100g',
-      beneficio: 'Pectina reguladora y quercetina antioxidante para saciedad.',
-      imagen: 'https://images.unsplash.com/photo-1560806887-1e4cd0b6cbd6?w=400&q=80',
-    },
-    {
-      id: '10',
-      nombre: 'Naranja / Cítricos',
-      categoriaTipo: 'fruta',
-      categoria: 'Frutas Cítricas',
-      calorias: '~47 kcal / 100g',
-      beneficio: 'Vitamina C que estimula colágeno en articulaciones e inmunidad.',
-      imagen: 'https://images.unsplash.com/photo-1611080626919-7cf5a9dbab5b?w=400&q=80',
-    },
-  ];
-
-  const alimentosProteina = alimentos.filter((a) => a.categoriaTipo === 'proteina');
-  const alimentosCarbos = alimentos.filter((a) => a.categoriaTipo === 'carbo');
-  const alimentosGrasas = alimentos.filter((a) => a.categoriaTipo === 'grasa');
-  const alimentosVerduras = alimentos.filter((a) => a.categoriaTipo === 'verdura');
-  const alimentosFrutas = alimentos.filter((a) => a.categoriaTipo === 'fruta');
 
   // Acciones de Cámara e Imagen
   const _abrirCamara = async () => {
@@ -220,35 +104,6 @@ export const PantallaNutricion = ({ route }: any) => {
     }, 1600);
   };
 
-  // Renderizador de tarjeta de alimento horizontal (una abajo de otra)
-  const renderTarjetaAlimento = (item: AlimentoItem) => (
-    <TouchableOpacity
-      key={item.id}
-      style={styles.tarjetaAlimentoFila}
-      activeOpacity={0.88}
-      onPress={() => setAlimentoDetalle(item)}
-    >
-      <Image source={{ uri: item.imagen }} style={styles.imagenAlimentoFila} resizeMode="cover" />
-
-      <View style={styles.infoAlimentoFila}>
-        <View style={styles.filaSuperiorAlimento}>
-          <Text style={styles.nombreAlimento} numberOfLines={1}>
-            {item.nombre.toUpperCase()}
-          </Text>
-          <Text style={styles.caloriasAlimento}>
-            {item.calorias.toUpperCase()}
-          </Text>
-        </View>
-        <View style={styles.miniBarraTrack}>
-          <View style={styles.miniBarraFill} />
-        </View>
-        <Text style={styles.beneficioAlimento} numberOfLines={2}>
-          {item.beneficio}
-        </Text>
-      </View>
-    </TouchableOpacity>
-  );
-
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -279,137 +134,8 @@ export const PantallaNutricion = ({ route }: any) => {
           </View>
         </View>
 
-        {/* SECCIÓN 1: ALIMENTOS RECOMENDADOS (TÍTULO CENTRADO Y TARJETAS APILADAS UNA ABAJO DE OTRA) */}
-        <View style={styles.seccionCard}>
-          <Text style={styles.cardTituloNegroCentrado}>ALIMENTOS RECOMENDADOS</Text>
-
-          {/* 1. PROTEÍNAS */}
-          <Text style={styles.categoriaSubtituloCentrado}>PROTEÍNAS</Text>
-          <View style={styles.listaAlimentosColumna}>
-            {alimentosProteina.map(renderTarjetaAlimento)}
-          </View>
-
-          {/* 2. CARBOHIDRATOS */}
-          <Text style={styles.categoriaSubtituloCentrado}>CARBOHIDRATOS</Text>
-          <View style={styles.listaAlimentosColumna}>
-            {alimentosCarbos.map(renderTarjetaAlimento)}
-          </View>
-
-          {/* 3. GRASAS SALUDABLES */}
-          <Text style={styles.categoriaSubtituloCentrado}>GRASAS SALUDABLES</Text>
-          <View style={styles.listaAlimentosColumna}>
-            {alimentosGrasas.map(renderTarjetaAlimento)}
-          </View>
-
-          {/* 4. VERDURAS (POR SEPARADO) */}
-          <Text style={styles.categoriaSubtituloCentrado}>VERDURAS</Text>
-          <View style={styles.listaAlimentosColumna}>
-            {alimentosVerduras.map(renderTarjetaAlimento)}
-          </View>
-
-          {/* 5. FRUTAS (POR SEPARADO) */}
-          <Text style={styles.categoriaSubtituloCentrado}>FRUTAS</Text>
-          <View style={styles.listaAlimentosColumna}>
-            {alimentosFrutas.map(renderTarjetaAlimento)}
-          </View>
-        </View>
-
-        {/* SECCIÓN 2: APORTE NUTRICIONAL (EXACTO MISMO ESTILO QUE CONSUMO DE CALORÍAS) */}
-        <View style={styles.seccionCard}>
-          <Text style={styles.cardTituloNegroCentrado}>APORTE NUTRICIONAL</Text>
-
-          <View style={styles.aporteListaMacros}>
-            {/* 1. PROTEÍNA */}
-            <View style={styles.macroCardAporte}>
-              <View style={styles.macroFilaSuperior}>
-                <View style={styles.macroNombreFila}>
-                  <View style={[styles.macroPunto, { backgroundColor: ColoresMetricas.proteina }]} />
-                  <Text style={styles.macroNombre}>PROTEÍNA</Text>
-                </View>
-                <Text style={styles.macroPorcentaje}>35%</Text>
-              </View>
-              <Text style={styles.macroNumeroGrande}>~175 G / DÍA (4 KCAL/G)</Text>
-              <View style={styles.miniBarTrack}>
-                <View style={[styles.miniBarFill, { width: '35%', backgroundColor: ColoresMetricas.proteina }]} />
-              </View>
-              <Text style={styles.macroGramos}>
-                DEBE CONSUMIR: PECHUGA DE POLLO • SALMÓN • HUEVOS • PESCADO
-              </Text>
-            </View>
-
-            {/* 2. CARBOHIDRATOS */}
-            <View style={styles.macroCardAporte}>
-              <View style={styles.macroFilaSuperior}>
-                <View style={styles.macroNombreFila}>
-                  <View style={[styles.macroPunto, { backgroundColor: ColoresMetricas.carbos }]} />
-                  <Text style={styles.macroNombre}>CARBOHIDRATOS</Text>
-                </View>
-                <Text style={styles.macroPorcentaje}>40%</Text>
-              </View>
-              <Text style={styles.macroNumeroGrande}>~200 G / DÍA (4 KCAL/G)</Text>
-              <View style={styles.miniBarTrack}>
-                <View style={[styles.miniBarFill, { width: '40%', backgroundColor: ColoresMetricas.carbos }]} />
-              </View>
-              <Text style={styles.macroGramos}>
-                DEBE CONSUMIR: PURÉ DE BATATA/PAPA • AVENA INTEGRAL • ARROZ
-              </Text>
-            </View>
-
-            {/* 3. GRASAS SALUDABLES */}
-            <View style={styles.macroCardAporte}>
-              <View style={styles.macroFilaSuperior}>
-                <View style={styles.macroNombreFila}>
-                  <View style={[styles.macroPunto, { backgroundColor: ColoresMetricas.grasa }]} />
-                  <Text style={styles.macroNombre}>GRASAS SALUDABLES</Text>
-                </View>
-                <Text style={styles.macroPorcentaje}>25%</Text>
-              </View>
-              <Text style={styles.macroNumeroGrande}>~55 G / DÍA (9 KCAL/G)</Text>
-              <View style={styles.miniBarTrack}>
-                <View style={[styles.miniBarFill, { width: '25%', backgroundColor: ColoresMetricas.grasa }]} />
-              </View>
-              <Text style={styles.macroGramos}>
-                DEBE CONSUMIR: AGUACATE MADURO • NUECES & ALMENDRAS • ACEITE DE OLIVA
-              </Text>
-            </View>
-
-            {/* 4. VERDURAS */}
-            <View style={styles.macroCardAporte}>
-              <View style={styles.macroFilaSuperior}>
-                <View style={styles.macroNombreFila}>
-                  <View style={[styles.macroPunto, { backgroundColor: '#10B981' }]} />
-                  <Text style={styles.macroNombre}>VERDURAS</Text>
-                </View>
-                <Text style={styles.macroPorcentaje}>FIBRA</Text>
-              </View>
-              <Text style={styles.macroNumeroGrande}>2 A 3 PORCIONES / DÍA</Text>
-              <View style={styles.miniBarTrack}>
-                <View style={[styles.miniBarFill, { width: '100%', backgroundColor: '#10B981' }]} />
-              </View>
-              <Text style={styles.macroGramos}>
-                DEBE CONSUMIR: ESPINACAS CRUDAS • BRÓCOLI AL VAPOR • ESPÁRRAGOS
-              </Text>
-            </View>
-
-            {/* 5. FRUTAS */}
-            <View style={styles.macroCardAporte}>
-              <View style={styles.macroFilaSuperior}>
-                <View style={styles.macroNombreFila}>
-                  <View style={[styles.macroPunto, { backgroundColor: '#F59E0B' }]} />
-                  <Text style={styles.macroNombre}>FRUTAS</Text>
-                </View>
-                <Text style={styles.macroPorcentaje}>ANTIOXIDANTES</Text>
-              </View>
-              <Text style={styles.macroNumeroGrande}>2 PORCIONES / DÍA</Text>
-              <View style={styles.miniBarTrack}>
-                <View style={[styles.miniBarFill, { width: '100%', backgroundColor: '#F59E0B' }]} />
-              </View>
-              <Text style={styles.macroGramos}>
-                DEBE CONSUMIR: MANZANA FRESCA • NARANJA / CÍTRICOS • FRUTOS ROJOS
-              </Text>
-            </View>
-          </View>
-        </View>
+        {/* PLAN RECOMENDADO (IA) / MI DIETA PROPIA + SEGUIMIENTO DE HOY */}
+        <SeccionNutricion onAbrirPlan={() => navigation.navigate('PlanPersonalizado')} />
 
         <View style={{ height: 110 }} />
       </ScrollView>
@@ -455,6 +181,27 @@ export const PantallaNutricion = ({ route }: any) => {
               </View>
               <Text style={styles.indicacionPuntual}>
                 Toma una foto clara a tu plato o sube una imagen de la galería para calcular las calorías y macronutrientes al instante.
+              </Text>
+            </TouchableOpacity>
+
+            {/* Acceso al Plan personalizado (IA) */}
+            <TouchableOpacity
+              style={[styles.tarjetaAnalizarComida, { marginTop: 12 }]}
+              activeOpacity={0.88}
+              onPress={() => {
+                setModalMenuVisible(false);
+                navigation.navigate('PlanPersonalizado');
+              }}
+            >
+              <View style={styles.filaAnalizarComidaHeader}>
+                <View style={styles.iconoComidaCaja}>
+                  <Ionicons name="sparkles-outline" size={20} color="#FFFFFF" />
+                </View>
+                <Text style={styles.tituloAnalizarComidaCentrado}>PLAN PERSONALIZADO</Text>
+                <View style={{ width: 40 }} />
+              </View>
+              <Text style={styles.indicacionPuntual}>
+                Ajusta tu objetivo y frecuencia de entrenamiento, y activa el plan de comidas y rutinas calculado para ti.
               </Text>
             </TouchableOpacity>
           </View>
@@ -568,63 +315,6 @@ export const PantallaNutricion = ({ route }: any) => {
                   </View>
                 )}
               </ScrollView>
-            )}
-          </View>
-        </View>
-      </Modal>
-
-      {/* MODAL DETALLE DE ALIMENTO */}
-      <Modal
-        visible={alimentoDetalle !== null}
-        animationType="fade"
-        transparent={true}
-        onRequestClose={() => setAlimentoDetalle(null)}
-      >
-        <View style={styles.modalFondoOscuro}>
-          <View style={styles.modalSheetBlanco}>
-            {alimentoDetalle && (
-              <>
-                <View style={styles.modalSheetHeader}>
-                  <View style={styles.balanceadorEspacio} />
-                  <Text style={styles.modalSheetTituloCentrado}>{alimentoDetalle.nombre.toUpperCase()}</Text>
-                  <TouchableOpacity
-                    onPress={() => setAlimentoDetalle(null)}
-                    style={styles.botonCerrarCircular}
-                    activeOpacity={0.8}
-                  >
-                    <Ionicons name="close" size={20} color="#000000" />
-                  </TouchableOpacity>
-                </View>
-
-                <View style={styles.detalleImagenContainer}>
-                  <Image source={{ uri: alimentoDetalle.imagen }} style={styles.detalleImagen} resizeMode="cover" />
-                </View>
-
-                <View style={styles.kpiMiniCard}>
-                  <View style={styles.statusBadgeRow}>
-                    <View style={[styles.statusDot, { backgroundColor: ColoresApp.primario }]} />
-                    <Text style={styles.statusBadgeTexto}>{alimentoDetalle.categoria.toUpperCase()}</Text>
-                  </View>
-                  <Text style={styles.kpiNumeroGrande}>{alimentoDetalle.calorias.toUpperCase()}</Text>
-                  <View style={styles.kpiBarraPista}>
-                    <View style={[styles.kpiBarraLlenado, { width: '100%' }]} />
-                  </View>
-                  <Text style={styles.kpiSubtexto}>VALOR NUTRICIONAL DE ALTA DENSIDAD</Text>
-                </View>
-
-                <View style={styles.detalleBeneficioCaja}>
-                  <Text style={styles.detalleBeneficioTitulo}>IMPACTO METABÓLICO</Text>
-                  <Text style={styles.detalleBeneficioTexto}>{alimentoDetalle.beneficio}</Text>
-                </View>
-
-                <TouchableOpacity
-                  style={styles.botonEntendido}
-                  onPress={() => setAlimentoDetalle(null)}
-                  activeOpacity={0.85}
-                >
-                  <Text style={styles.botonEntendidoTexto}>CERRAR</Text>
-                </TouchableOpacity>
-              </>
             )}
           </View>
         </View>

@@ -7,6 +7,7 @@ import { PantallaRegistro } from '../screens/PantallaRegistro';
 import { PantallaDashboard } from '../screens/PantallaDashboard';
 import { PantallaCamaraPose } from '../screens/PantallaCamaraPose';
 import { PantallaCamaraBiometrica } from '../screens/PantallaCamaraBiometrica';
+import { PantallaPlanPersonalizado } from '../screens/PantallaPlanPersonalizado';
 
 export type RootStackParamList = {
   Carga: undefined;
@@ -15,6 +16,7 @@ export type RootStackParamList = {
   Dashboard: undefined;
   CamaraPose: { nombreEjercicio: string };
   CamaraBiometrica: { onAnalisisCompletado: (peso: number, estatura: number) => void };
+  PlanPersonalizado: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -35,6 +37,7 @@ export const AppNavigator = () => {
         <Stack.Screen name="Registro" component={PantallaRegistro} />
         <Stack.Screen name="CamaraPose" component={PantallaCamaraPose} />
         <Stack.Screen name="CamaraBiometrica" component={PantallaCamaraBiometrica} />
+        <Stack.Screen name="PlanPersonalizado" component={PantallaPlanPersonalizado} />
       </Stack.Navigator>
     </NavigationContainer>
   );

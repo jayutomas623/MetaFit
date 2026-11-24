@@ -71,6 +71,8 @@ export interface AnalysisResult {
   /** Recomendación técnica asociada al error o rechazo actual. */
   tip: string | null;
   trackingValid: boolean;
+  /** Corrección para decir en voz alta en este frame (ya respeta el cooldown de 5 s). */
+  vozCorreccion: string | null;
 }
 
 export interface SessionSummary {
@@ -114,6 +116,34 @@ const EVENT_FEEDBACK_MS = 1800;
 
 const MSG_INCOMPLETE_RETURN = 'Completa el recorrido: vuelve a la posición inicial';
 const MSG_TOO_FAST = 'Demasiado rápido: controla el movimiento';
+
+/** Tiempo sostenido con un problema (postura o detección) antes de corregir por voz. */
+const VOZ_PROBLEMA_SOSTENIDO_MS = 3000;
+/** Pausa mínima entre dos correcciones por voz. */
+const VOZ_COOLDOWN_MS = 5000;
+
+/** Cómo ubicarse frente a la cámara en cada ejercicio (detección 2D: de perfil). */
+export const GUIA_CAMARA: Record<ExerciseType, string> = {
+  squat: 'Colócate de perfil a la cámara, con todo el cuerpo visible.',
+  bulgarianSquat: 'Colócate de perfil, con la pierna de trabajo adelante y del lado de la cámara.',
+  bicepCurl: 'Colócate de perfil, con el brazo que trabaja del lado de la cámara.',
+  shoulderPress: 'Colócate de perfil, con el torso y los brazos visibles.',
+  abdominals: 'Acuéstate de perfil a la cámara, con hombros, cadera y rodillas visibles.',
+  gluteKickback: 'Colócate en cuatro apoyos, de perfil, con la pierna de trabajo del lado de la cámara.',
+  tricepExtension: 'Colócate de perfil, con el codo y la mano del lado de la cámara.',
+  singleArmRow: 'Colócate de perfil, con el brazo que trabaja del lado de la cámara.',
+};
+
+/** Ejercicios que se hacen un lado a la vez: la serie se divide en Lado 1 y Lado 2. */
+export const EJERCICIOS_UNILATERALES: ExerciseType[] = [
+  'bicepCurl',
+  'gluteKickback',
+  'singleArmRow',
+  'tricepExtension',
+  'bulgarianSquat',
+];
+
+export const esUnilateral = (type: ExerciseType): boolean => EJERCICIOS_UNILATERALES.includes(type);
 
 interface RuleContext {
   p: SidePoints;
@@ -381,6 +411,12 @@ export class ExerciseEngine {
   // Estadísticas de la serie
   private errorTotals = new Map<string, number>();
 
+  // Vigilante de voz (capa aparte: NO interviene en el conteo de repeticiones)
+  private posturaDesde = new Map<string, number>();
+  private trackingPerdidoDesde = 0;
+  private sinPersonaDesde = 0;
+  private ultimaVozAt = -Infinity;
+
   constructor(exerciseType: ExerciseType) {
     this.exerciseType = exerciseType;
     this.config = EXERCISE_CONFIG[exerciseType];
@@ -412,6 +448,91 @@ export class ExerciseEngine {
     this.errorTotals.clear();
     this.filter.reset();
     this.resetRep();
+    this.resetVoz();
+  }
+
+  /**
+   * Reinicia el seguimiento (fase de la repetición, filtro y lado detectado) SIN borrar
+   * los contadores. Se usa al cambiar de lado en ejercicios unilaterales, para que los
+   * movimientos de transición no cuenten como repeticiones.
+   */
+  reiniciarSeguimiento(): void {
+    this.state = 'readyUp';
+    this.side = null;
+    this.outlierFrames = 0;
+    this.lastValidAt = 0;
+    this.eventFeedback = null;
+    this.eventTip = null;
+    this.eventUntil = 0;
+    this.filter.reset();
+    this.resetRep();
+    this.resetVoz();
+  }
+
+  /** Cómo ubicarse frente a la cámara para este ejercicio. */
+  get guiaCamara(): string {
+    return GUIA_CAMARA[this.exerciseType];
+  }
+
+  /**
+   * Registra una frase dicha por fuera del motor (número de repetición, guía, cambio
+   * de lado…) para que la siguiente corrección respete el cooldown.
+   */
+  marcarVoz(now: number = Date.now()): void {
+    this.ultimaVozAt = now;
+  }
+
+  /**
+   * Llamar cuando MediaPipe no detecta a ninguna persona. Devuelve un recordatorio de
+   * ubicación si lleva ~3 s sin verse a nadie (respetando el cooldown), o null.
+   * No modifica el estado del conteo.
+   */
+  processNoHuman(now: number = Date.now()): string | null {
+    if (!this.sinPersonaDesde) this.sinPersonaDesde = now;
+    if (now - this.sinPersonaDesde >= VOZ_PROBLEMA_SOSTENIDO_MS) {
+      const voz = this.hablarSiToca(`No te veo. ${this.guiaCamara}`, now);
+      if (voz) this.sinPersonaDesde = now;
+      return voz;
+    }
+    return null;
+  }
+
+  private resetVoz(): void {
+    this.posturaDesde.clear();
+    this.trackingPerdidoDesde = 0;
+    this.sinPersonaDesde = 0;
+    this.ultimaVozAt = -Infinity;
+  }
+
+  private hablarSiToca(texto: string, now: number): string | null {
+    if (now - this.ultimaVozAt < VOZ_COOLDOWN_MS) return null;
+    this.ultimaVozAt = now;
+    return texto;
+  }
+
+  /**
+   * Corrección por voz si un error de postura se mantiene ~3 s. Evalúa las mismas reglas
+   * del ejercicio pero sin exigir que la repetición esté en curso, para no quedarse
+   * callado cuando la mala postura impide siquiera empezar el movimiento.
+   * Solo produce voz: el conteo sigue usando updateErrors() como antes.
+   */
+  private vigilarPostura(p: SidePoints, angle: number, now: number): string | null {
+    let voz: string | null = null;
+    for (const rule of this.config.rules) {
+      const presente = rule.check({ p, angle, state: 'descending' });
+      if (!presente) {
+        this.posturaDesde.delete(rule.message);
+        continue;
+      }
+      const desde = this.posturaDesde.get(rule.message);
+      if (desde === undefined) {
+        this.posturaDesde.set(rule.message, now);
+      } else if (!voz && now - desde >= VOZ_PROBLEMA_SOSTENIDO_MS) {
+        voz = this.hablarSiToca(rule.message, now);
+        if (voz) this.posturaDesde.set(rule.message, now); // otros 3 s antes de repetir
+      }
+    }
+    return voz;
   }
 
   /** Recomendación técnica para un mensaje de error de este ejercicio. */
@@ -426,12 +547,21 @@ export class ExerciseEngine {
     landmarksInput: LandmarkPoint[] | Record<string, LandmarkPoint>,
     now: number = Date.now()
   ): AnalysisResult {
+    this.sinPersonaDesde = 0;
     const points = this.resolveSide(landmarksInput);
     const [ja, jb, jc] = this.config.joints;
 
     if (!points || !points[ja] || !points[jb] || !points[jc]) {
-      return this.handleTrackingLoss(now);
+      const perdido = this.handleTrackingLoss(now);
+      // Hay una persona pero no se ven las articulaciones del ejercicio: avisar a los ~3 s.
+      if (!this.trackingPerdidoDesde) this.trackingPerdidoDesde = now;
+      if (now - this.trackingPerdidoDesde >= VOZ_PROBLEMA_SOSTENIDO_MS) {
+        perdido.vozCorreccion = this.hablarSiToca(`No te veo bien. ${this.guiaCamara}`, now);
+        if (perdido.vozCorreccion) this.trackingPerdidoDesde = now;
+      }
+      return perdido;
     }
+    this.trackingPerdidoDesde = 0;
 
     const rawAngle = VectorMath.calculateAngle(points[ja]!, points[jb]!, points[jc]!);
 
@@ -454,7 +584,14 @@ export class ExerciseEngine {
     const errors = this.updateErrors({ p: points, angle, state: this.state });
     const { completed, rejected } = this.stepFsm(angle, now);
 
-    return this.buildResult(angle, errors, completed, rejected, true, now);
+    const result = this.buildResult(angle, errors, completed, rejected, true, now);
+    if (completed || rejected) {
+      // La pantalla anuncia el número o el motivo de la repetición.
+      this.ultimaVozAt = now;
+    } else {
+      result.vozCorreccion = this.vigilarPostura(points, angle, now);
+    }
+    return result;
   }
 
   getSessionSummary(): SessionSummary {
@@ -520,6 +657,7 @@ export class ExerciseEngine {
       rejectionReason: this.lastRejection,
       tip: null,
       trackingValid: false,
+      vozCorreccion: null,
     };
   }
 
@@ -740,6 +878,7 @@ export class ExerciseEngine {
       rejectionReason: this.lastRejection,
       tip,
       trackingValid,
+      vozCorreccion: null,
     };
   }
 

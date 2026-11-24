@@ -2,190 +2,419 @@ import React, { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Modal, TextInput, ScrollView, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { RootStackParamList } from '../navigation/AppNavigator';
 import { ColoresApp } from '../theme/colors';
 import { useStore } from '../services/useStore';
-import { listaEjerciciosEjemplo } from '../models/Ejercicio';
-import { Rutina } from '../models/Rutina';
+import { usePlanActivo } from '../services/usePlanActivo';
+import { listaEjerciciosEjemplo, Ejercicio } from '../models/Ejercicio';
+import { EjercicioRutina, RutinaPropia } from '../models/Plan';
+import { esUnilateral, ExerciseType } from '../services/exerciseEngine';
+import { nuevoId, resumenDias } from '../services/fechas';
+import { ModalCamaraBiomecanica, DetalleSerie } from '../components/ModalCamaraBiomecanica';
+import { BarraProgreso, SelectorDias, SelectorModo, Stepper, est } from '../components/plan/ui';
+
+interface SesionCamara {
+  ejercicio: Ejercicio;
+  clave: string;
+  series: number;
+  reps: number;
+}
+
+const ejercicioDe = (tipo: ExerciseType) => listaEjerciciosEjemplo.find((e) => e.engineType === tipo)!;
 
 export const PantallaRutinas = () => {
-  const rutinas = useStore((state) => state.rutinasPersonalizadas);
-  const agregarRutina = useStore((state) => state.agregarRutinaPersonalizada);
-  const [modalVisible, setModalVisible] = useState(false);
-  
-  const [nuevoTitulo, setNuevoTitulo] = useState('');
-  const [ejerciciosSeleccionados, setEjerciciosSeleccionados] = useState<string[]>([]);
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const { datos, plan, hoy } = usePlanActivo();
+  const setModoRutinas = useStore((s) => s.setModoRutinas);
+  const registrarSerieHoy = useStore((s) => s.registrarSerieHoy);
+  const sumarPuntosActividad = useStore((s) => s.sumarPuntosActividad);
+  const activarRutinaPropia = useStore((s) => s.activarRutinaPropia);
+  const eliminarRutinaPropia = useStore((s) => s.eliminarRutinaPropia);
+  const seguirPlanIA = useStore((s) => s.seguirPlanIA);
 
-  const _toggleEjercicio = (id: string) => {
-    if (ejerciciosSeleccionados.includes(id)) {
-      setEjerciciosSeleccionados(ejerciciosSeleccionados.filter((e) => e !== id));
-    } else {
-      setEjerciciosSeleccionados([...ejerciciosSeleccionados, id]);
-    }
+  const [sesion, setSesion] = useState<SesionCamara | null>(null);
+  const [formVisible, setFormVisible] = useState(false);
+  const [rutinaEditando, setRutinaEditando] = useState<RutinaPropia | null>(null);
+
+  if (!plan || !hoy) return null;
+
+  const iniciarCamara = (tipo: ExerciseType, clave: string, series: number, reps: number) => {
+    setSesion({ ejercicio: ejercicioDe(tipo), clave, series, reps });
   };
 
-  const _guardarRutina = () => {
-    if (!nuevoTitulo.trim()) {
-      Alert.alert('Error', 'Por favor ingresa un título para tu rutina.');
-      return;
-    }
-    if (ejerciciosSeleccionados.length === 0) {
-      Alert.alert('Error', 'Debes seleccionar al menos un ejercicio.');
-      return;
-    }
-
-    const nuevaRutina: Rutina = {
-      id: Date.now().toString(),
-      titulo: nuevoTitulo,
-      objetivo: 'Personalizado',
-      duracion: `${ejerciciosSeleccionados.length * 10} min`,
-      diasSemana: 'Personalizado',
-      cantidadEjercicios: ejerciciosSeleccionados.length,
-      nivel: 'Todos',
-      // We could add ejercicios to Rutina interface if needed, but for now we rely on cantidadEjercicios
-    };
-
-    agregarRutina(nuevaRutina);
-    setModalVisible(false);
-    setNuevoTitulo('');
-    setEjerciciosSeleccionados([]);
+  // Al terminar la serie en la cámara: se marca el avance de hoy y se suman puntos.
+  const alCompletarSerie = (reps: number, _detalle: DetalleSerie) => {
+    if (!sesion || reps <= 0) return;
+    registrarSerieHoy(sesion.clave, sesion.series);
+    sumarPuntosActividad(reps * 5);
   };
+
+  const confirmarEliminar = (r: RutinaPropia) => {
+    Alert.alert('Eliminar rutina', `¿Eliminar "${r.nombre}"?`, [
+      { text: 'Cancelar', style: 'cancel' },
+      { text: 'Eliminar', style: 'destructive', onPress: () => eliminarRutinaPropia(r.id) },
+    ]);
+  };
+
+  const modoIA = datos.modoRutinas === 'ia';
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      {/* Cabecera Centrada Minimalista */}
-      <View style={styles.headerCentrado}>
-        <Text style={styles.subtituloCentrado}>PLANES DE ENTRENAMIENTO</Text>
-        <Text style={styles.tituloNegroCentrado}>MIS RUTINAS</Text>
-      </View>
-      
-      {rutinas.length === 0 ? (
-        <View style={styles.emptyContainer}>
-          <View style={styles.iconCircle}>
-            <Ionicons name="barbell-outline" size={48} color="#94A3B8" />
-          </View>
-          <Text style={styles.emptyTitle}>Aún no tienes rutinas</Text>
-          <Text style={styles.emptySubtitle}>Agrega ejercicios para armar tu rutina personalizada.</Text>
+      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+        <View style={styles.headerCentrado}>
+          <Text style={styles.subtituloCentrado}>PLANES DE ENTRENAMIENTO</Text>
+          <Text style={styles.tituloNegroCentrado}>MIS RUTINAS</Text>
         </View>
-      ) : (
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          {rutinas.map((rutina) => (
-            <TouchableOpacity key={rutina.id} style={styles.card} activeOpacity={0.88}>
-              <View style={styles.cardHeader}>
-                <Text style={styles.cardTitle}>{rutina.titulo}</Text>
-                <Ionicons name="chevron-forward" size={18} color="#94A3B8" />
-              </View>
-              <View style={styles.tagContainer}>
-                <Text style={styles.tagText}>{rutina.cantidadEjercicios} ejercicios</Text>
-                <Text style={styles.tagSeparador}>•</Text>
-                <Text style={styles.tagText}>{rutina.duracion}</Text>
-              </View>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      )}
 
-      <TouchableOpacity activeOpacity={0.85} style={styles.fab} onPress={() => setModalVisible(true)}>
-        <Ionicons name="add" size={28} color="#FFFFFF" />
-      </TouchableOpacity>
+        <SelectorModo
+          opciones={[
+            { id: 'ia', etiqueta: 'Rutina del Plan (IA)', icono: 'sparkles-outline' },
+            { id: 'propio', etiqueta: 'Mis Rutinas Propias', icono: 'create-outline' },
+          ]}
+          valor={datos.modoRutinas}
+          onCambiar={setModoRutinas}
+        />
 
-      {/* Modal para agregar Rutina */}
-      <Modal animationType="slide" transparent={true} visible={modalVisible} onRequestClose={() => setModalVisible(false)}>
-        <View style={styles.modalBackground}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>NUEVA RUTINA</Text>
-              <TouchableOpacity activeOpacity={0.7} onPress={() => setModalVisible(false)}>
-                <Ionicons name="close" size={24} color="#000000" />
-              </TouchableOpacity>
+        {/* SEGUIMIENTO DE HOY */}
+        <View style={est.card}>
+          <Text style={est.cardTitulo}>SEGUIMIENTO DE HOY</Text>
+          <View style={[est.filaEntre, { marginBottom: 6 }]}>
+            <Text style={styles.hoyDia}>{hoy.nombreDia.toUpperCase()}</Text>
+            <Text style={[styles.hoyTitulo, hoy.esDescanso && { color: '#64748B' }]} numberOfLines={1}>
+              {hoy.esDescanso && modoIA ? 'Día de descanso' : hoy.tituloEntreno}
+            </Text>
+          </View>
+
+          {hoy.esDescanso ? (
+            <View style={[est.fila, { marginTop: 4 }]}>
+              <Ionicons name="bed-outline" size={20} color="#64748B" style={{ marginRight: 8 }} />
+              <Text style={[est.texto, { flex: 1 }]}>
+                {hoy.complemento ?? 'Hoy no hay ejercicios programados. Descansa y recupérate.'}
+              </Text>
             </View>
-
-            <TextInput 
-              style={styles.input} 
-              placeholder="Nombre de la rutina..." 
-              value={nuevoTitulo} 
-              onChangeText={setNuevoTitulo}
-              placeholderTextColor="#94A3B8"
-            />
-
-            <Text style={styles.sectionTitle}>SELECCIONA LOS EJERCICIOS</Text>
-            <ScrollView style={styles.ejerciciosList} showsVerticalScrollIndicator={false}>
-              {listaEjerciciosEjemplo.map((ej) => {
-                const seleccionado = ejerciciosSeleccionados.includes(ej.id);
+          ) : (
+            <>
+              <View style={[est.filaEntre, { marginBottom: 4 }]}>
+                <Text style={est.nota}>
+                  {hoy.seriesHechas} de {hoy.seriesTotales} series
+                </Text>
+                <Text style={styles.porcentaje}>{Math.round(hoy.progresoEntreno * 100)}%</Text>
+              </View>
+              <BarraProgreso valor={hoy.progresoEntreno} color={hoy.progresoEntreno >= 1 ? '#10B981' : ColoresApp.primario} />
+              {hoy.ejercicios.map((e) => {
+                const completo = e.seriesHechas >= e.series;
                 return (
-                  <TouchableOpacity key={ej.id} style={[styles.ejercicioItem, seleccionado && styles.ejercicioItemActivo]} onPress={() => _toggleEjercicio(ej.id)} activeOpacity={0.8}>
-                    <View style={styles.ejercicioItemTextCont}>
-                      <Text style={[styles.ejercicioNombre, seleccionado && styles.ejercicioNombreActivo]}>{ej.nombre}</Text>
-                      <Text style={styles.ejercicioDesc}>{ej.grupoMuscular} • {ej.articulacionClave}</Text>
+                  <View key={e.key} style={styles.ejercicioFila}>
+                    <Ionicons
+                      name={completo ? 'checkmark-circle' : 'ellipse-outline'}
+                      size={22}
+                      color={completo ? '#10B981' : '#CBD5E1'}
+                      style={{ marginRight: 10 }}
+                    />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.ejercicioNombre}>{e.nombre}</Text>
+                      <Text style={est.nota}>
+                        {e.seriesHechas}/{e.series} series · {e.reps} reps{e.unilateral ? ' por lado' : ''}
+                      </Text>
                     </View>
-                    <Ionicons name={seleccionado ? "checkbox" : "square-outline"} size={22} color={seleccionado ? ColoresApp.primario : "#CBD5E1"} />
-                  </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.botonCamara, completo && { backgroundColor: '#94A3B8' }]}
+                      onPress={() => iniciarCamara(e.tipo, e.key, e.series, e.reps)}
+                      activeOpacity={0.85}
+                      accessibilityLabel={`Iniciar ${e.nombre} con cámara`}
+                    >
+                      <Ionicons name="videocam" size={14} color="#FFFFFF" style={{ marginRight: 4 }} />
+                      <Text style={styles.botonCamaraTexto}>{completo ? 'OTRA' : 'INICIAR'}</Text>
+                    </TouchableOpacity>
+                  </View>
                 );
               })}
-            </ScrollView>
+              {hoy.complemento && <Text style={[est.nota, { marginTop: 10 }]}>+ {hoy.complemento}</Text>}
+            </>
+          )}
+        </View>
 
-            <TouchableOpacity style={styles.saveButton} onPress={_guardarRutina} activeOpacity={0.88}>
-              <Text style={styles.saveButtonText}>GUARDAR RUTINA</Text>
+        {modoIA ? (
+          <>
+            {!datos.planIAActivo && (
+              <View style={est.card}>
+                <Text style={[est.texto, { marginBottom: 10 }]}>
+                  Esta rutina se calculó con tus medidas ({plan.tituloEnfoque.toLowerCase()}). Actívala para seguirla
+                  también en Nutrición.
+                </Text>
+                <TouchableOpacity style={est.botonPrimario} onPress={seguirPlanIA}>
+                  <Text style={est.botonPrimarioTexto}>SEGUIR ESTE PLAN</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            <View style={est.card}>
+              <View style={[est.filaEntre, { marginBottom: 4 }]}>
+                <Text style={est.subtituloSeccion}>SEMANA DEL PLAN</Text>
+                <TouchableOpacity onPress={() => navigation.navigate('PlanPersonalizado')}>
+                  <Text style={styles.enlace}>Ajustar plan ›</Text>
+                </TouchableOpacity>
+              </View>
+              <Text style={[est.nota, { marginBottom: 6 }]}>
+                Entrenas: {resumenDias(plan.diasEntreno)} · {plan.descansoEntreSeries}
+              </Text>
+              {plan.semana.map((d) => (
+                <View key={d.dia} style={[styles.diaFila, d.indice === hoy.indiceDia && styles.diaHoy]}>
+                  <Text style={styles.diaNombre}>{d.dia.slice(0, 3).toUpperCase()}</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.diaTitulo, !d.entrena && { color: '#94A3B8' }]}>{d.titulo}</Text>
+                    {d.ejercicios.length > 0 && (
+                      <Text style={est.nota} numberOfLines={2}>
+                        {d.ejercicios.map((e) => `${e.nombre} ${e.series}×${e.reps}`).join(' · ')}
+                      </Text>
+                    )}
+                  </View>
+                </View>
+              ))}
+            </View>
+          </>
+        ) : (
+          <>
+            {datos.rutinasPropias.length === 0 ? (
+              <View style={[est.card, { alignItems: 'center', paddingVertical: 28 }]}>
+                <Ionicons name="barbell-outline" size={40} color="#94A3B8" />
+                <Text style={[styles.ejercicioNombre, { marginTop: 10 }]}>Aún no tienes rutinas propias</Text>
+                <Text style={[est.nota, { textAlign: 'center', marginTop: 4 }]}>
+                  Crea una con los ejercicios de la app, elige sus días y actívala para seguirla cada día.
+                </Text>
+              </View>
+            ) : (
+              datos.rutinasPropias.map((r) => {
+                const activa = r.id === datos.rutinaPropiaActivaId;
+                return (
+                  <View key={r.id} style={[est.card, activa && styles.cardActiva]}>
+                    <View style={est.filaEntre}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.rutinaNombre}>{r.nombre}</Text>
+                        <Text style={est.nota}>
+                          {resumenDias(r.dias)} · {r.ejercicios.length} ejercicios
+                        </Text>
+                      </View>
+                      <TouchableOpacity
+                        style={[est.botonIcono, { marginLeft: 6 }]}
+                        onPress={() => {
+                          setRutinaEditando(r);
+                          setFormVisible(true);
+                        }}
+                        accessibilityLabel="Editar rutina"
+                      >
+                        <Ionicons name="create-outline" size={16} color="#000000" />
+                      </TouchableOpacity>
+                      <TouchableOpacity style={[est.botonIcono, { marginLeft: 6 }]} onPress={() => confirmarEliminar(r)} accessibilityLabel="Eliminar rutina">
+                        <Ionicons name="trash-outline" size={16} color={ColoresApp.primario} />
+                      </TouchableOpacity>
+                    </View>
+
+                    {r.ejercicios.map((e) => (
+                      <View key={e.uid} style={styles.ejercicioFila}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.ejercicioNombreChico}>{ejercicioDe(e.tipo).nombre}</Text>
+                          <Text style={est.nota}>
+                            {e.series} × {e.reps}
+                            {esUnilateral(e.tipo) ? ' por lado' : ''}
+                          </Text>
+                        </View>
+                        <TouchableOpacity
+                          style={est.botonIcono}
+                          onPress={() => iniciarCamara(e.tipo, `propia:${r.id}:${e.uid}`, e.series, e.reps)}
+                          accessibilityLabel="Iniciar con cámara"
+                        >
+                          <Ionicons name="videocam-outline" size={16} color={ColoresApp.primario} />
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+
+                    <TouchableOpacity
+                      style={[activa ? est.botonSecundario : est.botonPrimario, { marginTop: 12 }]}
+                      onPress={() => activarRutinaPropia(activa ? null : r.id)}
+                      activeOpacity={0.88}
+                    >
+                      {activa && <Ionicons name="checkmark-circle" size={16} color="#10B981" style={{ marginRight: 6 }} />}
+                      <Text style={activa ? est.botonSecundarioTexto : est.botonPrimarioTexto}>
+                        {activa ? 'RUTINA ACTIVA · tocar para desactivar' : 'ACTIVAR PARA SEGUIMIENTO'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                );
+              })
+            )}
+          </>
+        )}
+
+        <View style={{ height: 120 }} />
+      </ScrollView>
+
+      {!modoIA && (
+        <TouchableOpacity
+          activeOpacity={0.85}
+          style={styles.fab}
+          onPress={() => {
+            setRutinaEditando(null);
+            setFormVisible(true);
+          }}
+          accessibilityLabel="Crear rutina"
+        >
+          <Ionicons name="add" size={28} color="#FFFFFF" />
+        </TouchableOpacity>
+      )}
+
+      <FormRutina visible={formVisible} rutina={rutinaEditando} onCerrar={() => setFormVisible(false)} />
+
+      {/* Cámara IA con la meta de repeticiones del ejercicio */}
+      <ModalCamaraBiomecanica
+        visible={sesion !== null}
+        ejercicio={sesion?.ejercicio ?? null}
+        metaReps={sesion?.reps}
+        onCerrar={() => setSesion(null)}
+        onCompletarSerie={alCompletarSerie}
+      />
+    </SafeAreaView>
+  );
+};
+
+/** Crear / editar una rutina propia: nombre, días y ejercicios con series y repeticiones. */
+const FormRutina = ({ visible, rutina, onCerrar }: { visible: boolean; rutina: RutinaPropia | null; onCerrar: () => void }) => {
+  const guardarRutinaPropia = useStore((s) => s.guardarRutinaPropia);
+  const [nombre, setNombre] = useState('');
+  const [dias, setDias] = useState<number[]>([0, 2, 4]);
+  const [ejercicios, setEjercicios] = useState<EjercicioRutina[]>([]);
+
+  React.useEffect(() => {
+    if (!visible) return;
+    setNombre(rutina?.nombre ?? '');
+    setDias(rutina?.dias ?? [0, 2, 4]);
+    setEjercicios(rutina?.ejercicios ?? []);
+  }, [visible, rutina]);
+
+  const alternar = (tipo: ExerciseType) => {
+    setEjercicios((prev) =>
+      prev.some((e) => e.tipo === tipo)
+        ? prev.filter((e) => e.tipo !== tipo)
+        : [...prev, { uid: nuevoId(), tipo, series: 3, reps: 10 }]
+    );
+  };
+
+  const actualizar = (tipo: ExerciseType, cambio: Partial<EjercicioRutina>) => {
+    setEjercicios((prev) => prev.map((e) => (e.tipo === tipo ? { ...e, ...cambio } : e)));
+  };
+
+  const guardar = () => {
+    if (!nombre.trim()) return Alert.alert('Falta el nombre', 'Escribe un nombre para tu rutina.');
+    if (dias.length === 0) return Alert.alert('Elige los días', 'Selecciona al menos un día de la semana.');
+    if (ejercicios.length === 0) return Alert.alert('Sin ejercicios', 'Agrega al menos un ejercicio.');
+    guardarRutinaPropia({ id: rutina?.id ?? nuevoId(), nombre: nombre.trim(), dias, ejercicios });
+    onCerrar();
+  };
+
+  return (
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={onCerrar}>
+      <View style={est.modalFondo}>
+        <View style={est.modalHoja}>
+          <View style={[est.filaEntre, { marginBottom: 14 }]}>
+            <Text style={est.modalTitulo}>{rutina ? 'EDITAR RUTINA' : 'NUEVA RUTINA'}</Text>
+            <TouchableOpacity style={est.botonIcono} onPress={onCerrar} accessibilityLabel="Cerrar">
+              <Ionicons name="close" size={18} color="#000000" />
             </TouchableOpacity>
           </View>
-        </View>
-      </Modal>
+          <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+            <TextInput style={est.input} placeholder="Nombre de la rutina" placeholderTextColor="#94A3B8" value={nombre} onChangeText={setNombre} />
+            <Text style={est.subtituloSeccion}>DÍAS DE LA SEMANA</Text>
+            <SelectorDias dias={dias} onCambiar={setDias} />
 
-    </SafeAreaView>
+            <Text style={est.subtituloSeccion}>EJERCICIOS</Text>
+            {listaEjerciciosEjemplo.map((ej) => {
+              const sel = ejercicios.find((e) => e.tipo === ej.engineType);
+              const unilateral = esUnilateral(ej.engineType);
+              return (
+                <View key={ej.id} style={[styles.formEjercicio, sel && styles.formEjercicioActivo]}>
+                  <TouchableOpacity style={est.filaEntre} onPress={() => alternar(ej.engineType)} activeOpacity={0.8}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.ejercicioNombreChico}>{ej.nombre}</Text>
+                      <Text style={est.nota}>
+                        {ej.grupoMuscular}
+                        {unilateral ? ' · un lado a la vez' : ''}
+                      </Text>
+                    </View>
+                    <Ionicons name={sel ? 'checkbox' : 'square-outline'} size={22} color={sel ? ColoresApp.primario : '#CBD5E1'} />
+                  </TouchableOpacity>
+                  {sel && (
+                    <View style={[est.filaEntre, { marginTop: 10 }]}>
+                      <View style={est.fila}>
+                        <Text style={[est.nota, { marginRight: 6 }]}>Series</Text>
+                        <Stepper valor={sel.series} onCambiar={(v) => actualizar(ej.engineType, { series: v })} max={10} />
+                      </View>
+                      <View style={est.fila}>
+                        <Text style={[est.nota, { marginRight: 6 }]}>{unilateral ? 'Reps/lado' : 'Reps'}</Text>
+                        <Stepper valor={sel.reps} onCambiar={(v) => actualizar(ej.engineType, { reps: v })} max={50} />
+                      </View>
+                    </View>
+                  )}
+                </View>
+              );
+            })}
+
+            <TouchableOpacity style={[est.botonPrimario, { marginTop: 8 }]} onPress={guardar} activeOpacity={0.88}>
+              <Text style={est.botonPrimarioTexto}>GUARDAR RUTINA</Text>
+            </TouchableOpacity>
+            <View style={{ height: 24 }} />
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
   );
 };
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: '#FAFAFA' },
-  headerCentrado: {
+  scroll: { paddingHorizontal: 18, paddingTop: 8 },
+  headerCentrado: { alignItems: 'center', marginBottom: 16, paddingTop: 8 },
+  subtituloCentrado: { fontSize: 10, fontWeight: '800', color: '#64748B', letterSpacing: 1.2 },
+  tituloNegroCentrado: { fontSize: 20, fontWeight: '900', color: '#000000', letterSpacing: 0.5 },
+  hoyDia: { fontSize: 12, fontWeight: '900', color: '#000000', letterSpacing: 1 },
+  hoyTitulo: { fontSize: 12, fontWeight: '800', color: ColoresApp.primario, flexShrink: 1, marginLeft: 10 },
+  porcentaje: { fontSize: 12, fontWeight: '900', color: '#000000' },
+  ejercicioFila: { flexDirection: 'row', alignItems: 'center', borderTopWidth: 1, borderTopColor: '#F1F5F9', paddingTop: 10, marginTop: 10 },
+  ejercicioNombre: { fontSize: 13, fontWeight: '800', color: '#000000' },
+  ejercicioNombreChico: { fontSize: 12, fontWeight: '800', color: '#000000' },
+  botonCamara: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: ColoresApp.primario,
+    borderRadius: 16,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+  },
+  botonCamaraTexto: { fontSize: 10, fontWeight: '900', color: '#FFFFFF', letterSpacing: 0.5 },
+  enlace: { fontSize: 11, fontWeight: '800', color: ColoresApp.primario },
+  diaFila: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 8, paddingHorizontal: 8, borderRadius: 10 },
+  diaHoy: { backgroundColor: '#FFF1F2' },
+  diaNombre: { width: 42, fontSize: 11, fontWeight: '900', color: '#000000', letterSpacing: 0.6 },
+  diaTitulo: { fontSize: 12, fontWeight: '800', color: '#000000' },
+  cardActiva: { borderColor: '#A7F3D0' },
+  rutinaNombre: { fontSize: 14, fontWeight: '900', color: '#000000' },
+  formEjercicio: { borderWidth: 1, borderColor: '#F1F5F9', borderRadius: 12, padding: 12, marginBottom: 8 },
+  formEjercicioActivo: { borderColor: ColoresApp.primario, backgroundColor: '#FFF7F8' },
+  fab: {
+    position: 'absolute',
+    right: 20,
+    bottom: 100,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: ColoresApp.primario,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingTop: 14,
-    paddingBottom: 16,
-    backgroundColor: '#FAFAFA',
+    shadowColor: ColoresApp.primario,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    elevation: 6,
   },
-  subtituloCentrado: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: '#64748B',
-    letterSpacing: 1.5,
-    textTransform: 'uppercase',
-    textAlign: 'center',
-    marginBottom: 4,
-  },
-  tituloNegroCentrado: {
-    fontSize: 22,
-    fontWeight: '900',
-    color: '#000000',
-    letterSpacing: 0.8,
-    textAlign: 'center',
-  },
-  scrollContent: { padding: 16, paddingBottom: 120 },
-  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40, paddingBottom: 60 },
-  iconCircle: { width: 88, height: 88, borderRadius: 44, backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', marginBottom: 20, borderWidth: 1, borderColor: '#F1F5F9' },
-  emptyTitle: { fontSize: 17, fontWeight: '900', color: '#000000', marginBottom: 6 },
-  emptySubtitle: { fontSize: 13, fontWeight: '500', color: '#64748B', textAlign: 'center', lineHeight: 18 },
-  fab: { position: 'absolute', bottom: 95, right: 20, width: 56, height: 56, borderRadius: 18, backgroundColor: ColoresApp.primario, justifyContent: 'center', alignItems: 'center', shadowColor: ColoresApp.primario, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 6 },
-  
-  card: { backgroundColor: '#FFFFFF', padding: 18, borderRadius: 18, marginBottom: 12, borderWidth: 1, borderColor: '#F1F5F9', shadowColor: '#000000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 8, elevation: 2 },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  cardTitle: { fontSize: 16, fontWeight: '900', color: '#000000', flex: 1, letterSpacing: 0.3 },
-  tagContainer: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  tagText: { color: '#64748B', fontSize: 12, fontWeight: '700' },
-  tagSeparador: { color: '#CBD5E1', fontSize: 10 },
-
-  modalBackground: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.6)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: '#FFFFFF', borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 22, height: '82%' },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 },
-  modalTitle: { fontSize: 18, fontWeight: '900', color: '#000000', letterSpacing: 0.5 },
-  input: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 12, paddingHorizontal: 16, height: 50, fontSize: 15, fontWeight: '700', color: '#000000', marginBottom: 18 },
-  sectionTitle: { fontSize: 12, fontWeight: '900', color: '#000000', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.8 },
-  ejerciciosList: { flex: 1, marginBottom: 18 },
-  ejercicioItem: { flexDirection: 'row', alignItems: 'center', padding: 14, borderWidth: 1, borderColor: '#F1F5F9', borderRadius: 14, marginBottom: 8, backgroundColor: '#FFFFFF' },
-  ejercicioItemActivo: { borderColor: ColoresApp.primario, borderWidth: 1.5 },
-  ejercicioItemTextCont: { flex: 1 },
-  ejercicioNombre: { fontSize: 14, fontWeight: '800', color: '#000000', marginBottom: 2 },
-  ejercicioNombreActivo: { color: ColoresApp.primario },
-  ejercicioDesc: { fontSize: 12, color: '#64748B' },
-  saveButton: { backgroundColor: ColoresApp.primario, height: 50, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  saveButtonText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900', letterSpacing: 0.8 },
 });

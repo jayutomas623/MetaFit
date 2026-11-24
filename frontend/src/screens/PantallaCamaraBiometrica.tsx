@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -12,7 +12,7 @@ import {
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
 import { useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import Svg, { Circle } from 'react-native-svg';
 import { ColoresApp } from '../theme/colors';
 import * as Speech from 'expo-speech';
@@ -21,6 +21,9 @@ import {
   SCRIPT_CAMBIAR_CAMARA,
   SCRIPT_DETENER_CAMARA,
   SCRIPT_REANUDAR_CAMARA,
+  ESPERA_MONTAJE_CAMARA_MS,
+  tomarCamara,
+  soltarCamara,
 } from '../services/mediapipeWebView';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -116,38 +119,114 @@ export const PantallaCamaraBiometrica = ({ route }: any) => {
     };
   }, []);
 
-  // Ciclo de vida de la cámara:
-  // - Antes de salir (beforeRemove) se libera la cámara dentro del WebView, para que
-  //   la siguiente entrada no encuentre el dispositivo ocupado (causa del "zoom" y de
-  //   la pérdida de detección al entrar y salir varias veces).
-  // - En segundo plano se detiene y al volver se reanuda.
+  // ---------------------------------------------------------------------------
+  // Ciclo de vida de la cámara (blindado para entrar y salir muchas veces seguidas)
+  // - Al ganar el foco: se reinicia TODO el estado y las referencias, y se monta un
+  //   WebView nuevo (key nueva) tras una breve espera, después de ordenar a cualquier
+  //   WebView anterior que libere la cámara (seguro de instancia única tomarCamara).
+  // - Al perder el foco o salir (beforeRemove): se libera la cámara, se desmonta el
+  //   WebView, se cancelan todos los temporizadores y se reinicia el estado.
+  // - En segundo plano se detiene la cámara y al volver se reanuda.
+  // ---------------------------------------------------------------------------
   const [webViewKey, setWebViewKey] = useState(0);
+  const [camaraMontada, setCamaraMontada] = useState(false);
   const reintentosCamaraRef = useRef(0);
+  const timersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
+  const programar = (fn: () => void, ms: number) => {
+    const id = setTimeout(() => {
+      timersRef.current.delete(id);
+      fn();
+    }, ms);
+    timersRef.current.add(id);
+  };
+
+  const limpiarTimers = () => {
+    timersRef.current.forEach((id) => clearTimeout(id));
+    timersRef.current.clear();
+  };
+
+  // Devuelve estado y referencias a sus valores iniciales (no altera ninguna fórmula).
+  const reiniciarEstado = () => {
+    setCargandoIA(true);
+    setHumanoDetectado(false);
+    setLineaCabezaY(null);
+    setLineaPisoY(SCREEN_HEIGHT * 0.82);
+    setEstaturaEnVivo(null);
+    setPesoEnVivo(null);
+    setTiempoQuieto(0);
+    setMedidaFijada(false);
+    setResultadoFinal(null);
+    setSegundosRestantes10s(10);
+
+    ultimosPuntosRef.current = null;
+    estaturaSuavizadaRef.current = null;
+    pesoSuavizadoRef.current = null;
+    lineaCabezaYSuavizadaRef.current = null;
+    lineaPisoYSuavizadaRef.current = null;
+    estaturaEnteraFijadaRef.current = null;
+    pesoEnteroFijadoRef.current = null;
+    bufferEstaturaRef.current = [];
+    bufferPesoRef.current = [];
+    estaturaEnVivoRef.current = null;
+    pesoEnVivoRef.current = null;
+    lastValidEstaturaRef.current = null;
+    lastValidPesoRef.current = null;
+    resultadoFinalRef.current = null;
+    yaGuardadoRef.current = false;
+    medidaFijadaRef.current = false;
+    tiempoFijadoTimestampRef.current = 0;
+    contadorGestoRef.current = 0;
+    gestoEnProgresoRef.current = false;
+  };
+
+  useFocusEffect(
+    useCallback(() => {
+      reiniciarEstado();
+      reintentosCamaraRef.current = 0;
+      setWebViewKey((k) => k + 1);
+      programar(() => {
+        tomarCamara(webViewRef);
+        setCamaraMontada(true);
+      }, ESPERA_MONTAJE_CAMARA_MS);
+
+      const suscripcionAppState = AppState.addEventListener('change', (estado) => {
+        webViewRef.current?.injectJavaScript(
+          estado === 'active' ? SCRIPT_REANUDAR_CAMARA : SCRIPT_DETENER_CAMARA
+        );
+      });
+
+      return () => {
+        suscripcionAppState.remove();
+        limpiarTimers();
+        try {
+          Speech.stop();
+        } catch (e) {}
+        soltarCamara(webViewRef);
+        setCamaraMontada(false);
+        reiniciarEstado();
+      };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [])
+  );
+
+  // Liberar antes de la animación de salida (beforeRemove llega antes que el blur).
   useEffect(() => {
-    const quitarBeforeRemove = navigation.addListener('beforeRemove', () => {
-      webViewRef.current?.injectJavaScript(SCRIPT_DETENER_CAMARA);
-    });
-    const suscripcionAppState = AppState.addEventListener('change', (estado) => {
-      if (estado === 'active') {
-        webViewRef.current?.injectJavaScript(SCRIPT_REANUDAR_CAMARA);
-      } else {
-        webViewRef.current?.injectJavaScript(SCRIPT_DETENER_CAMARA);
-      }
-    });
-    return () => {
-      quitarBeforeRemove();
-      suscripcionAppState.remove();
-      webViewRef.current?.injectJavaScript(SCRIPT_DETENER_CAMARA);
-    };
+    return navigation.addListener('beforeRemove', () => soltarCamara(webViewRef));
   }, [navigation]);
 
   // Si el proceso del WebView muere o la cámara falla, se remonta el WebView limpio.
   const remontarWebView = () => {
     if (reintentosCamaraRef.current >= 3) return;
     reintentosCamaraRef.current += 1;
+    soltarCamara(webViewRef);
     setCargandoIA(true);
+    setCamaraMontada(false);
     setWebViewKey((k) => k + 1);
+    programar(() => {
+      tomarCamara(webViewRef);
+      setCamaraMontada(true);
+    }, ESPERA_MONTAJE_CAMARA_MS);
   };
 
   // Guardado infalible de la medición
@@ -223,7 +302,11 @@ export const PantallaCamaraBiometrica = ({ route }: any) => {
       }
 
       if (data.type === 'CAMERA_ERROR') {
-        setTimeout(remontarWebView, 800);
+        programar(remontarWebView, 800);
+        return;
+      }
+
+      if (data.type === 'ZOOM_CORREGIDO') {
         return;
       }
 
@@ -526,23 +609,25 @@ export const PantallaCamaraBiometrica = ({ route }: any) => {
   return (
     <View style={styles.container}>
       {/* WebView con cámara a 30 FPS */}
-      <WebView
-        key={webViewKey}
-        ref={webViewRef}
-        onRenderProcessGone={remontarWebView}
-        onContentProcessDidTerminate={remontarWebView}
-        originWhitelist={['*']}
-        source={{ html: MEDIAPIPE_HTML, baseUrl: 'https://localhost' }}
-        style={StyleSheet.absoluteFill}
-        javaScriptEnabled={true}
-        domStorageEnabled={true}
-        allowsInlineMediaPlayback={true}
-        mediaPlaybackRequiresUserAction={false}
-        mediaCapturePermissionGrantType="grant"
-        mixedContentMode="always"
-        userAgent="Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-        onMessage={handleWebViewMessage}
-      />
+      {camaraMontada && (
+        <WebView
+          key={webViewKey}
+          ref={webViewRef}
+          onRenderProcessGone={remontarWebView}
+          onContentProcessDidTerminate={remontarWebView}
+          originWhitelist={['*']}
+          source={{ html: MEDIAPIPE_HTML, baseUrl: 'https://localhost' }}
+          style={StyleSheet.absoluteFill}
+          javaScriptEnabled={true}
+          domStorageEnabled={true}
+          allowsInlineMediaPlayback={true}
+          mediaPlaybackRequiresUserAction={false}
+          mediaCapturePermissionGrantType="grant"
+          mixedContentMode="always"
+          userAgent="Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+          onMessage={handleWebViewMessage}
+        />
+      )}
 
       {/* Cargador inicial sobrio */}
       {cargandoIA && (

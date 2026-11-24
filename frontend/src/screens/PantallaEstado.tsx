@@ -1,12 +1,16 @@
 import React from 'react';
-import { View, Text, StyleSheet, ScrollView, Image } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { RootStackParamList } from '../navigation/AppNavigator';
+import { usePlanActivo } from '../services/usePlanActivo';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useStore } from '../services/useStore';
 import { UsuarioLogic } from '../models/Usuario';
 import Svg, { Circle } from 'react-native-svg';
 import { TarjetaNutricionDashboard } from '../components/TarjetaNutricionDashboard';
-import { ColoresMetricas } from '../theme/colors';
+import { ColoresMetricas, ColoresApp } from '../theme/colors';
 
 // Diagnósticos clínicos objetivos (Sin emojis ni texto de relleno)
 function getDiagnosticoIMC(imc: number) {
@@ -76,8 +80,10 @@ function getDiagnosticoGrasa(grasaPct: number, esHombre: boolean) {
 }
 
 export const PantallaEstado = () => {
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const usuarioState = useStore((state) => state.usuarioActual);
-  if (!usuarioState) return null;
+  const { datos, plan, hoy } = usePlanActivo();
+  if (!usuarioState || !plan || !hoy) return null;
 
   const usuario = new UsuarioLogic(usuarioState);
 
@@ -330,8 +336,32 @@ export const PantallaEstado = () => {
           </View>
         </View>
 
-        {/* TARJETA DE DISTRIBUCIÓN DE CALORÍAS */}
-        <TarjetaNutricionDashboard usuario={usuario} />
+        {/* ACCESO RÁPIDO AL PLAN PERSONALIZADO + RESUMEN DE HOY */}
+        <TouchableOpacity
+          style={styles.planCard}
+          activeOpacity={0.88}
+          onPress={() => navigation.navigate('PlanPersonalizado')}
+          accessibilityLabel="Abrir plan personalizado"
+        >
+          <View style={styles.planIcono}>
+            <Ionicons name={datos.planIAActivo ? 'checkmark-circle-outline' : 'sparkles-outline'} size={20} color="#FFFFFF" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.planTitulo}>
+              {datos.planIAActivo ? 'PLAN ACTIVO' : 'PLAN PERSONALIZADO'}
+            </Text>
+            <Text style={styles.planSubtitulo} numberOfLines={1}>
+              {plan.tituloEnfoque} · {plan.calorias.toLocaleString()} kcal
+            </Text>
+            <Text style={styles.planSubtitulo} numberOfLines={1}>
+              Hoy: {hoy.esDescanso ? hoy.tituloEntreno.toLowerCase() : `${hoy.tituloEntreno} (${hoy.seriesHechas}/${hoy.seriesTotales} series)`}
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color="#000000" />
+        </TouchableOpacity>
+
+        {/* TARJETA DE DISTRIBUCIÓN DE CALORÍAS (plan activo + consumo de hoy) */}
+        <TarjetaNutricionDashboard plan={plan} consumidoKcal={hoy.consumido.kcal} modo={datos.modoNutricion} />
 
         {/* ACTIVIDAD SEMANAL TÉCNICA Y SOBRIA */}
         <View style={styles.graphCard}>
@@ -405,6 +435,32 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#FAFAFA',
   },
+  planCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#F1F5F9',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.03,
+    shadowRadius: 8,
+    elevation: 2,
+    marginBottom: 14,
+  },
+  planIcono: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: ColoresApp.primario,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  planTitulo: { fontSize: 12, fontWeight: '900', color: '#000000', letterSpacing: 1 },
+  planSubtitulo: { fontSize: 11, fontWeight: '600', color: '#64748B', marginTop: 2, lineHeight: 15 },
   scrollContent: {
     paddingHorizontal: 18,
     paddingTop: 8,
